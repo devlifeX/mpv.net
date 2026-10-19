@@ -35,20 +35,34 @@ jobs:
             mkdir -p "$destination"
             msgfmt "$po" -o "$destination/mpvnet.mo"
           done
-      - name: Check packaged player and FFmpeg on Windows
+      - name: Check packaged native libraries and player startup on Windows
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $package = Join-Path $PWD 'artifacts/mpv.net-win-x64'
+          # An installed Vulkan SDK on the runner must not hide a missing package DLL.
+          $loader = Join-Path $package 'vulkan-1.dll'
+          if (-not (Test-Path $loader)) { throw 'Packaged Vulkan loader is missing.' }
+          $handle = [Runtime.InteropServices.NativeLibrary]::Load($loader)
+          try {
+            [Runtime.InteropServices.NativeLibrary]::GetExport($handle, 'vkGetInstanceProcAddr') | Out-Null
+            $loaded = [Diagnostics.Process]::GetCurrentProcess().Modules |
+              Where-Object { $_.ModuleName -ieq 'vulkan-1.dll' }
+            if ($loaded.FileName -ine $loader) { throw 'Vulkan loader was loaded from outside the package.' }
+          } finally {
+            [Runtime.InteropServices.NativeLibrary]::Free($handle)
+          }
           & "$package/ffmpeg.exe" -version
           if ($LASTEXITCODE) { throw 'Packaged FFmpeg failed to start.' }
           $config = Join-Path $env:RUNNER_TEMP 'mpvnet-smoke-config'
           New-Item $config -ItemType Directory -Force | Out-Null
           $stdout = Join-Path $env:RUNNER_TEMP 'mpvnet-version.txt'
           $stderr = Join-Path $env:RUNNER_TEMP 'mpvnet-errors.txt'
+          $workingDirectory = Join-Path $env:RUNNER_TEMP 'unrelated working directory'
+          New-Item $workingDirectory -ItemType Directory -Force | Out-Null
           $process = Start-Process "$package/mpvnet.com" -ArgumentList @(
             '--version', '--process-instance=multi', "--config-dir=$config"
-          ) -WorkingDirectory $package -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          ) -WorkingDirectory $workingDirectory -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
           if (-not $process.WaitForExit(60000)) {
             $process.Kill($true)
             throw 'Packaged player startup timed out.'
@@ -61,6 +75,45 @@ jobs:
           }
           if (-not (Get-ChildItem "$package/Locale" -Recurse -Filter '*.mo')) {
             throw 'Compiled translations are missing.'
+          }
+      - name: Start and close the packaged Windows GUI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Join-Path $PWD 'artifacts/mpv.net-win-x64'
+          $pipeName = 'mpvnet-gui-smoke-' + [guid]::NewGuid().ToString('N')
+          $config = Join-Path $env:RUNNER_TEMP 'mpvnet-gui-config'
+          New-Item $config -ItemType Directory -Force | Out-Null
+          $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [IO.Pipes.PipeDirection]::InOut)
+          $process = Start-Process "$package/mpvnet.exe" -ArgumentList @(
+            '--idle=yes', '--vo=null', '--ao=null', '--load-scripts=no', '--process-instance=multi',
+            "--config-dir=$config", "--input-ipc-server=\\.\pipe\$pipeName"
+          ) -WorkingDirectory $env:RUNNER_TEMP -PassThru
+          try {
+            $pipe.Connect(30000)
+            $writer = [IO.StreamWriter]::new($pipe)
+            $writer.AutoFlush = $true
+            $reader = [IO.StreamReader]::new($pipe)
+            $writer.WriteLine('{"command":["get_property","mpv-version"],"request_id":1}')
+            $deadline = [DateTime]::UtcNow.AddSeconds(15)
+            do {
+              $line = $reader.ReadLineAsync()
+              if (-not $line.Wait(5000) -or $null -eq $line.Result -or [DateTime]::UtcNow -gt $deadline) {
+                throw 'GUI did not respond to the native playback query.'
+              }
+              $reply = $line.Result | ConvertFrom-Json
+            } while ($reply.request_id -ne 1)
+            if ($reply.error -ne 'success' -or $reply.data -notmatch 'mpv ') {
+              throw 'GUI failed to initialize the native playback core.'
+            }
+            Write-Output "GUI initialized: $($reply.data)"
+            $writer.WriteLine('{"command":["quit"]}')
+            if (-not $process.WaitForExit(15000) -or $process.ExitCode -ne 0) {
+              throw 'GUI did not shut down cleanly.'
+            }
+          } finally {
+            $pipe.Dispose()
+            if (-not $process.HasExited) { $process.Kill($true) }
           }
       - name: Upload ready-to-run portable package
         uses: actions/upload-artifact@v4
@@ -93,7 +146,7 @@ jobs:
           Windows x64 portable build with Continue playback and complete stream saving using the selected audio.
 
           Download **mpv.net-win-x64.zip**, extract the entire archive, then run **mpvnet.exe** on Windows 10/11 x64.
-          The .NET 10 runtime, libmpv, MediaInfo and FFmpeg are included.
+          The .NET 10 runtime, libmpv, its required Vulkan loader, MediaInfo and FFmpeg are included.
           Website streams that use yt-dlp require yt-dlp.exe beside mpvnet.exe or on PATH.
           EOF
           printf '\nCommit: %s\nBuild: %s/%s/actions/runs/%s\n' \

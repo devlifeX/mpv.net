@@ -36,20 +36,26 @@ $mediaInfo = Download 'https://mediaarea.net/download/binary/libmediainfo0/26.10
     '4efe172df014693732e8b64a004cf382b8599eaf86be26a9b38c0d2993e60e1d'
 $launcher = Download 'https://github.com/mpvnet-player/file-host/releases/download/tag/mpvnet.com.txt' 'mpvnet.com' `
     'd4b0a80779dc775fb8817afa128a4ddcfe3bd07bca98a9d0c49ba44daf5cb5e3'
+$vulkan = Download 'https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/VulkanRT-X64-1.4.363.0-Components.zip' 'vulkan.zip' `
+    'a25a927aa8b9f0371048f1861cf88ac3b9bc9b1fb332c42d897c8ab32695769a'
 
 Extract $mpv "$downloads/mpv"
 Extract $ffmpeg "$downloads/ffmpeg"
 Extract $mediaInfo "$downloads/mediainfo"
+Extract $vulkan "$downloads/vulkan"
+# Current libmpv builds hard-import the Vulkan loader even with Direct3D output.
+$vulkanRoot = "$downloads/vulkan/VulkanRT-X64-1.4.363.0-Components"
 Copy-Item "$downloads/mpv/libmpv-2.dll", "$downloads/ffmpeg/ffmpeg.exe", `
-    "$downloads/mediainfo/MediaInfo.dll", $launcher $output
+    "$downloads/mediainfo/MediaInfo.dll", "$vulkanRoot/x64/vulkan-1.dll", $launcher $output
 Copy-Item "$root/License.txt" $output
 New-Item "$output/licenses" -ItemType Directory -Force | Out-Null
 Copy-Item "$downloads/mediainfo/Developers/License.html" "$output/licenses/MediaInfo.html"
+Copy-Item "$vulkanRoot/VulkanRT-License.txt" "$output/licenses/VulkanRT-License.txt"
 Get-ChildItem "$downloads/mpv", "$downloads/ffmpeg" -Recurse -File |
     Where-Object { $_.Name -match '^(LICENSE|COPYING)' } |
     ForEach-Object { Copy-Item $_.FullName (Join-Path "$output/licenses" ($_.Directory.Name + '-' + $_.Name)) }
 
-foreach ($name in @('mpvnet.exe', 'mpvnet.com', 'libmpv-2.dll', 'MediaInfo.dll', 'ffmpeg.exe')) {
+foreach ($name in @('mpvnet.exe', 'mpvnet.com', 'libmpv-2.dll', 'vulkan-1.dll', 'MediaInfo.dll', 'ffmpeg.exe')) {
     $file = Join-Path $output $name
     if (-not (Test-Path $file) -or (Get-Item $file).Length -eq 0) {
         throw "Required package file is missing: $name"
@@ -64,6 +70,7 @@ Runtime: .NET 10, self-contained (no separate .NET installation required)
 libmpv and FFmpeg: $mpvRelease
 Native build sources: https://github.com/shinchiro/mpv-winbuild-cmake
 MediaInfo 26.10: https://mediaarea.net/en/MediaInfo
+Vulkan loader 1.4.363.0: https://vulkan.lunarg.com/sdk/home
 Start: extract the entire archive, then run mpvnet.exe on Windows 10/11 x64.
 Website streams that use yt-dlp require yt-dlp.exe beside mpvnet.exe or on PATH.
 "@ | Set-Content "$output/build-info.txt" -Encoding utf8
