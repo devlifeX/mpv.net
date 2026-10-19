@@ -1,0 +1,71 @@
+name: Windows portable build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build self-contained Windows x64 package
+        shell: pwsh
+        run: ./src/Tools/build-portable.ps1
+      - uses: msys2/setup-msys2@v2
+        with:
+          install: gettext
+      - name: Compile translations
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          for po in lang/po/*.po; do
+            language="$(basename "$po" .po)"
+            destination="artifacts/mpv.net-win-x64/Locale/$language/LC_MESSAGES"
+            mkdir -p "$destination"
+            msgfmt "$po" -o "$destination/mpvnet.mo"
+          done
+      - name: Check packaged player and FFmpeg on Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Join-Path $PWD 'artifacts/mpv.net-win-x64'
+          & "$package/ffmpeg.exe" -version
+          if ($LASTEXITCODE) { throw 'Packaged FFmpeg failed to start.' }
+          $config = Join-Path $env:RUNNER_TEMP 'mpvnet-smoke-config'
+          New-Item $config -ItemType Directory -Force | Out-Null
+          $stdout = Join-Path $env:RUNNER_TEMP 'mpvnet-version.txt'
+          $stderr = Join-Path $env:RUNNER_TEMP 'mpvnet-errors.txt'
+          $process = Start-Process "$package/mpvnet.com" -ArgumentList @(
+            '--version', '--process-instance=multi', "--config-dir=$config"
+          ) -WorkingDirectory $package -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          if (-not $process.WaitForExit(60000)) {
+            $process.Kill($true)
+            throw 'Packaged player startup timed out.'
+          }
+          $output = Get-Content $stdout -Raw
+          Get-Content $stderr
+          Write-Output $output
+          if ($process.ExitCode -ne 0 -or $output -notmatch 'mpv.net v' -or $output -notmatch 'mpv v') {
+            throw 'Packaged player did not initialize libmpv and report its version.'
+          }
+          if (-not (Get-ChildItem "$package/Locale" -Recurse -Filter '*.mo')) {
+            throw 'Compiled translations are missing.'
+          }
+      - name: Upload ready-to-run portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpv.net-win-x64
+          path: artifacts/mpv.net-win-x64/
+          if-no-files-found: error
+          retention-days: 30
