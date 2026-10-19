@@ -8,6 +8,9 @@
 
 mpv.net is a media player for Windows with a modern GUI.
 
+[Download the latest Windows x64 portable build](https://github.com/devlifeX/mpv.net/releases/latest/download/mpv.net-win-x64.zip).
+Extract the entire archive and run `mpvnet.exe`; the .NET runtime and FFmpeg are included.
+
 The player is based on the popular [mpv](https://mpv.io) media player.
 mpv.net is designed to be mpv compatible, almost all mpv features are available,
 this means the official [mpv manual](https://mpv.io/manual/master/) applies to mpv.net,

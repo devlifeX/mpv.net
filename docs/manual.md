@@ -46,6 +46,9 @@ Download
 
 [Stable and beta portable and setup via GitHub download](../../../releases)
 
+Successful builds of `main` publish a Windows x64 portable ZIP to Releases.
+Extract the entire archive and run `mpvnet.exe`; this package includes the .NET 10 runtime.
+
 [Changelog](changelog.md)
 
 
@@ -55,7 +58,7 @@ Installation
 #### Requirements
 
 1. Windows 10 or higher.
-2. [.NET Desktop Runtime 10.0](https://dotnet.microsoft.com/en-us/download/dotnet/10.0)
+2. [.NET Desktop Runtime 10.0](https://dotnet.microsoft.com/en-us/download/dotnet/10.0) for framework-dependent builds; it is bundled in the Windows x64 portable release.
 
 Internet streaming requires:
 

@@ -69,3 +69,36 @@ jobs:
           path: artifacts/mpv.net-win-x64/
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    needs: windows
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mpv.net-win-x64
+          path: package
+      - name: Create portable ZIP
+        working-directory: package
+        run: zip -q -r "$RUNNER_TEMP/mpv.net-win-x64.zip" .
+      - name: Publish Windows release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: windows-build-${{ github.run_number }}-${{ github.run_attempt }}
+        run: |
+          cat > release-notes.md <<'EOF'
+          Windows x64 portable build with Continue playback and complete stream saving using the selected audio.
+
+          Download **mpv.net-win-x64.zip**, extract the entire archive, then run **mpvnet.exe** on Windows 10/11 x64.
+          The .NET 10 runtime, libmpv, MediaInfo and FFmpeg are included.
+          Website streams that use yt-dlp require yt-dlp.exe beside mpvnet.exe or on PATH.
+          EOF
+          printf '\nCommit: %s\nBuild: %s/%s/actions/runs/%s\n' \
+            "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> release-notes.md
+          gh release create "$RELEASE_TAG" "$RUNNER_TEMP/mpv.net-win-x64.zip" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "mpv.net Windows x64 - build $GITHUB_RUN_NUMBER" \
+            --notes-file release-notes.md --latest
