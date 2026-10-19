@@ -42,7 +42,7 @@ Extract $ffmpeg "$downloads/ffmpeg"
 Extract $mediaInfo "$downloads/mediainfo"
 Copy-Item "$downloads/mpv/libmpv-2.dll", "$downloads/ffmpeg/ffmpeg.exe", `
     "$downloads/mediainfo/MediaInfo.dll", $launcher $output
-Copy-Item "$root/LICENSE" $output
+Copy-Item "$root/License.txt" $output
 New-Item "$output/licenses" -ItemType Directory -Force | Out-Null
 Copy-Item "$downloads/mediainfo/Developers/License.html" "$output/licenses/MediaInfo.html"
 Get-ChildItem "$downloads/mpv", "$downloads/ffmpeg" -Recurse -File |
