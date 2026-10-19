@@ -11,6 +11,7 @@ public static class InputHelp
 
         Add(b, new (_("File"), _("Open Files..."), "script-message-to mpvnet open-files", "o"));
         Add(b, new (_("File"), _("Open URL or file from clipboard"), "script-message-to mpvnet open-clipboard", "Ctrl+v"));
+        Add(b, new (_("File"), _("Save Buffered Video..."), "script-message-to mpvnet save-buffered-video"));
         Add(b, new (_("File"), _("Open DVD/Blu-ray Drive/Folder..."), "script-message-to mpvnet open-optical-media"));
         Add(b, new (_("File"), "-"));
         Add(b, new (_("File"), _("Add external audio files..."), "script-message-to mpvnet load-audio"));

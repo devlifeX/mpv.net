@@ -13,6 +13,7 @@ Table of contents
 * [Support](#support)
 * [Config Folder](#config-folder)
 * [Input and context menu](#input-and-context-menu)
+* [Saving a buffered video](#saving-a-buffered-video)
 * [Command Line Interface](#command-line-interface)
 * [Terminal](#terminal)
 * [mpv.net specific commands](#mpvnet-specific-commands)
@@ -130,6 +131,37 @@ The most important files and folders in the config folder are:
 - `input.conf` file containing mpv key and mouse input bindings.
 - `scripts` folder containing mpv user scripts.
 - `script-opts` folder containing user scripts configuration files.
+
+
+Saving a buffered video
+-----------------------
+
+Use `File > Save Buffered Video...` in the right-click context menu to save a fully
+buffered network video as a Matroska (`.mkv`) file without downloading it again.
+Choose a destination in the Save dialog. An existing destination is replaced only
+after the export succeeds. The menu command is also available as
+`script-message-to mpvnet save-buffered-video` for custom bindings and menus.
+
+Network videos keep their last frame open at the end, including in playlists,
+so the buffer can still be saved. Use Next to continue to the next playlist entry.
+Stopping, opening another file, or exiting releases the buffer; it does not survive
+restarting the player.
+
+Disk caching is enabled by default and the back buffer allows 512 MiB of packet
+metadata (typically sufficient for several hours). Video packets occupy disk space
+in mpv's cache directory, potentially as much as the entire video, while metadata
+still uses RAM. The disk cache is temporary and is removed when the video closes.
+These defaults can be overridden in `mpv.conf` with `cache-on-disk` and
+`demuxer-max-back-bytes`; disabling caching or reducing the limits may prevent saving
+the whole video.
+
+Saving requires a single continuous cached range containing both the beginning and
+end. If the cache is incomplete, watch/buffer the missing parts first. Videos using
+selected external audio/video streams (such as some adaptive streaming URLs) are
+not supported, because mpv's cache export only writes the main demuxer. Export
+remuxes buffered packets without re-encoding; it does not reproduce the original
+container byte-for-byte. mpv's experimental `dump-cache` can temporarily stall
+playback for a large export, and some source codecs/containers may fail to remux.
 
 
 Input and context menu

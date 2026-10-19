@@ -1,5 +1,8 @@
 ﻿
 using System.Runtime.InteropServices;
+using System.Collections.Concurrent;
+using System.Threading;
+using System.Threading.Tasks;
 
 using static MpvNet.Native.LibMpv;
 
@@ -29,6 +32,11 @@ public class MpvClient
 
     public nint Handle { get; set; }
 
+    readonly ConcurrentDictionary<ulong, TaskCompletionSource<mpv_error>> _pendingCommands = new();
+    long _commandId;
+    long _playbackGeneration;
+    public long PlaybackGeneration => Interlocked.Read(ref _playbackGeneration);
+
     public void EventLoop()
     {
         while (true)
@@ -41,6 +49,9 @@ public class MpvClient
                 switch (evt.event_id)
                 {
                     case mpv_event_id.MPV_EVENT_SHUTDOWN:
+                        foreach (var pending in _pendingCommands.ToArray())
+                            if (_pendingCommands.TryRemove(pending.Key, out var completion))
+                                completion.TrySetCanceled();
                         OnShutdown();
                         return;
                     case mpv_event_id.MPV_EVENT_LOG_MESSAGE:
@@ -60,6 +71,7 @@ public class MpvClient
                         break;
                     case mpv_event_id.MPV_EVENT_END_FILE:
                         {
+                            Interlocked.Increment(ref _playbackGeneration);
                             var data = (mpv_event_end_file)Marshal.PtrToStructure(evt.data, typeof(mpv_event_end_file))!;
                             OnEndFile(data);
                         }
@@ -80,9 +92,12 @@ public class MpvClient
                         OnSetPropertyReply();
                         break;
                     case mpv_event_id.MPV_EVENT_COMMAND_REPLY:
+                        if (_pendingCommands.TryRemove(evt.reply_userdata, out var command))
+                            command.TrySetResult((mpv_error)evt.error);
                         OnCommandReply();
                         break;
                     case mpv_event_id.MPV_EVENT_START_FILE:  // triggered before MPV_EVENT_FILE_LOADED
+                        Interlocked.Increment(ref _playbackGeneration);
                         OnStartFile();
                         break;
                     case mpv_event_id.MPV_EVENT_AUDIO_RECONFIG:
@@ -223,6 +238,27 @@ public class MpvClient
 
     public void CommandV(params string[] args)
     {
+        mpv_error err = SendCommand(args);
+
+        if (err < 0)
+            HandleError(err, "error executing command: " + string.Join("\n", args));
+    }
+
+    public Task<mpv_error> CommandVAsync(params string[] args)
+    {
+        ulong id = (ulong)Interlocked.Increment(ref _commandId);
+        var completion = new TaskCompletionSource<mpv_error>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingCommands[id] = completion;
+        mpv_error err = SendCommand(args, id);
+
+        if (err < 0 && _pendingCommands.TryRemove(id, out var pending))
+            pending.TrySetResult(err);
+
+        return completion.Task;
+    }
+
+    mpv_error SendCommand(string[] args, ulong id = 0)
+    {
         int count = args.Length + 1;
         IntPtr[] pointers = new IntPtr[count];
         IntPtr rootPtr = Marshal.AllocHGlobal(IntPtr.Size * count);
@@ -236,15 +272,14 @@ public class MpvClient
         }
 
         Marshal.Copy(pointers, 0, rootPtr, count);
-        mpv_error err = mpv_command(Handle, rootPtr);
+        mpv_error err = id == 0 ? mpv_command(Handle, rootPtr) : mpv_command_async(Handle, id, rootPtr);
 
         foreach (IntPtr ptr in pointers)
             Marshal.FreeHGlobal(ptr);
 
         Marshal.FreeHGlobal(rootPtr);
 
-        if (err < 0)
-            HandleError(err, "error executing command: " + string.Join("\n", args));
+        return err;
     }
 
     public string Expand(string? value)

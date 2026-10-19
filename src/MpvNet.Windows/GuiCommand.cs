@@ -20,6 +20,7 @@ namespace MpvNet;
 public class GuiCommand
 {
     Dictionary<string, Action<IList<string>>>? _commands;
+    bool _savingBufferedVideo;
 
     public event Action<float>? ScaleWindow;
     public event Action<string>? MoveWindow;
@@ -40,6 +41,7 @@ public class GuiCommand
         ["open-optical-media"] = Open_DVD_Or_BD_Folder,
         ["reg-file-assoc"] = RegisterFileAssociations,
         ["remove-from-path"] = args => RemoveFromPath(),
+        ["save-buffered-video"] = args => SaveBufferedVideo(),
         ["scale-window"] = args => ScaleWindow?.Invoke(float.Parse(args[0], CultureInfo.InvariantCulture)),
         ["show-about"] = args => ShowDialog(typeof(AboutWindow)),
         ["show-bindings"] = args => ShowBindings(),
@@ -74,6 +76,71 @@ public class GuiCommand
         Window? win = Activator.CreateInstance(winType) as Window;
         new WindowInteropHelper(win).Owner = MainForm.Instance!.Handle;
         win?.ShowDialog();
+    }
+
+    async void SaveBufferedVideo()
+    {
+        if (_savingBufferedVideo)
+        {
+            Msg.ShowInfo(_("A buffered video is already being saved."));
+            return;
+        }
+
+        _savingBufferedVideo = true;
+
+        try
+        {
+            long generation = Player.PlaybackGeneration;
+
+            if (!Player.GetPropertyBool("demuxer-via-network"))
+            {
+                Msg.ShowInfo(_("Open a network video before saving its buffer."));
+                return;
+            }
+
+            if (BufferedVideo.HasExternalMedia(Player.GetPropertyString("track-list")))
+            {
+                Msg.ShowInfo(_("Saving videos with separate external audio or video streams is not supported."));
+                return;
+            }
+
+            if (BufferedVideo.GetCompleteRange(Player.GetPropertyString("demuxer-cache-state")) == null)
+            {
+                Msg.ShowInfo(_("The complete video is not buffered. Let it buffer from beginning to end before saving."));
+                return;
+            }
+
+            string title = Player.GetPropertyString("media-title");
+            title = string.Concat(title.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+            title = title[..Math.Min(title.Length, 120)].TrimEnd(' ', '.');
+
+            using var dialog = new SaveFileDialog {
+                Title = _("Save Buffered Video"),
+                Filter = _("Matroska video (*.mkv)|*.mkv"),
+                DefaultExt = "mkv",
+                FileName = "video - " + title + ".mkv",
+                OverwritePrompt = true
+            };
+
+            if (dialog.ShowDialog() != DialogResult.OK)
+                return;
+
+            Player.CommandV("show-text", _("Saving buffered video..."), "5000");
+            await BufferedVideo.SaveAsync(Player, dialog.FileName, generation);
+            Msg.ShowInfo(_("Buffered video saved.") + BR2 + dialog.FileName);
+        }
+        catch (OperationCanceledException)
+        {
+            // libmpv cancels pending commands during shutdown.
+        }
+        catch (Exception ex)
+        {
+            Msg.ShowError(ex.Message);
+        }
+        finally
+        {
+            _savingBufferedVideo = false;
+        }
     }
 
     void LoadSubtitle(IList<string> args)
