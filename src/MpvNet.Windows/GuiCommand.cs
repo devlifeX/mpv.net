@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Globalization;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Windows.Interop;
 using System.Windows;
@@ -20,6 +22,9 @@ namespace MpvNet;
 public class GuiCommand
 {
     Dictionary<string, Action<IList<string>>>? _commands;
+    bool _savingBufferedVideo;
+    CancellationTokenSource? _saveCancellation;
+    Task? _saveTask;
 
     public event Action<float>? ScaleWindow;
     public event Action<string>? MoveWindow;
@@ -31,6 +36,7 @@ public class GuiCommand
     public Dictionary<string, Action<IList<string>>> Commands => _commands ??= new()
     {
         ["add-to-path"] = args => AddToPath(),
+        ["continue"] = args => ContinuePlayback(),
         ["edit-conf-file"] = EditCongFile,
         ["load-audio"] = LoadAudio,
         ["load-sub"] = LoadSubtitle,
@@ -40,6 +46,7 @@ public class GuiCommand
         ["open-optical-media"] = Open_DVD_Or_BD_Folder,
         ["reg-file-assoc"] = RegisterFileAssociations,
         ["remove-from-path"] = args => RemoveFromPath(),
+        ["save-buffered-video"] = args => SaveBufferedVideo(),
         ["scale-window"] = args => ScaleWindow?.Invoke(float.Parse(args[0], CultureInfo.InvariantCulture)),
         ["show-about"] = args => ShowDialog(typeof(AboutWindow)),
         ["show-bindings"] = args => ShowBindings(),
@@ -74,6 +81,94 @@ public class GuiCommand
         Window? win = Activator.CreateInstance(winType) as Window;
         new WindowInteropHelper(win).Owner = MainForm.Instance!.Handle;
         win?.ShowDialog();
+    }
+
+    async void ContinuePlayback()
+    {
+        try
+        {
+            await Player.Recovery.ContinueAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            // libmpv cancels pending commands during shutdown.
+        }
+        catch (Exception ex)
+        {
+            Msg.ShowError(ex.Message);
+        }
+    }
+
+    public Task CancelVideoSaveAsync()
+    {
+        _saveCancellation?.Cancel();
+        return _saveTask ?? Task.CompletedTask;
+    }
+
+    async void SaveBufferedVideo()
+    {
+        if (_savingBufferedVideo)
+        {
+            Msg.ShowInfo(_("A buffered video is already being saved."));
+            return;
+        }
+
+        _savingBufferedVideo = true;
+
+        try
+        {
+            long generation = Player.PlaybackGeneration;
+
+            if (!Player.GetPropertyBool("demuxer-via-network"))
+            {
+                Msg.ShowInfo(_("Open a network video before saving its buffer."));
+                return;
+            }
+
+            var selection = BufferedVideo.Capture(Player, generation);
+
+            string title = Player.GetPropertyString("media-title");
+            title = string.Concat(title.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+            title = title[..Math.Min(title.Length, 120)].TrimEnd(' ', '.');
+
+            using var dialog = new SaveFileDialog {
+                Title = _("Save Buffered Video"),
+                Filter = _("Matroska video (*.mkv)|*.mkv"),
+                DefaultExt = "mkv",
+                FileName = "video - " + title + ".mkv",
+                OverwritePrompt = true
+            };
+
+            if (dialog.ShowDialog() != DialogResult.OK)
+                return;
+
+            Player.CommandV("show-text", _("Saving buffered video..."), "5000");
+            _saveCancellation = new();
+            _saveTask = BufferedVideo.SaveAsync(Player, dialog.FileName, selection, _saveCancellation.Token,
+                new Progress<string>(message => {
+                    if (_saveCancellation is { IsCancellationRequested: false })
+                        Player.CommandV("show-text", message, int.MaxValue.ToString(CultureInfo.InvariantCulture));
+                }));
+            await _saveTask;
+            if (!_saveCancellation.IsCancellationRequested)
+                Msg.ShowInfo(_("Buffered video saved.") + BR2 + dialog.FileName);
+        }
+        catch (OperationCanceledException)
+        {
+            // libmpv cancels pending commands during shutdown.
+        }
+        catch (Exception ex)
+        {
+            if (_saveCancellation?.IsCancellationRequested != true) Msg.ShowError(ex.Message);
+        }
+        finally
+        {
+            if (_saveTask != null && Player.IsQuitNeeded) Player.CommandV("show-text", "");
+            _saveTask = null;
+            _saveCancellation?.Dispose();
+            _saveCancellation = null;
+            _savingBufferedVideo = false;
+        }
     }
 
     void LoadSubtitle(IList<string> args)

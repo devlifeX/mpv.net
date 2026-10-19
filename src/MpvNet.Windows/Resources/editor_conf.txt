@@ -1190,3 +1190,19 @@ file = mpv
 directory = Demuxer
 help = <bytesize> Controls how much the demuxer is allowed to buffer ahead.\nSuffixes such as KiB and MiB are supported.
 url = https://mpv.io/manual/master/#options-demuxer-max-bytes
+
+name = cache-on-disk
+file = mpv
+directory = Cache
+help = Keep cached packets in a temporary disk file instead of RAM, so buffered network videos can be saved. The file is removed when playback closes.\nmpv.net default: yes
+url = https://mpv.io/manual/master/#options-cache-on-disk
+default = yes
+option = yes
+option = no
+
+name = demuxer-max-back-bytes
+file = mpv
+directory = Cache
+help = Maximum past data retained in the cache. With disk caching this limits packet metadata in RAM, not video bytes on disk. Raising it retains more of a watched video for saving.\nmpv.net default: 512MiB
+url = https://mpv.io/manual/master/#options-demuxer-max-back-bytes
+default = 512MiB

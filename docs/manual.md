@@ -13,6 +13,8 @@ Table of contents
 * [Support](#support)
 * [Config Folder](#config-folder)
 * [Input and context menu](#input-and-context-menu)
+* [Continuing interrupted playback](#continuing-interrupted-playback)
+* [Saving a buffered video](#saving-a-buffered-video)
 * [Command Line Interface](#command-line-interface)
 * [Terminal](#terminal)
 * [mpv.net specific commands](#mpvnet-specific-commands)
@@ -130,6 +132,93 @@ The most important files and folders in the config folder are:
 - `input.conf` file containing mpv key and mouse input bindings.
 - `scripts` folder containing mpv user scripts.
 - `script-opts` folder containing user scripts configuration files.
+
+
+Continuing interrupted playback
+-------------------------------
+
+**Continue** is the first item in the right-click context menu, including legacy
+custom menus. It resumes healthy paused playback without discarding its buffer.
+After an interruption, or when playback is stalled, it reopens the last successfully
+checkpointed file/URL at its saved fractional position. After restarting mpv.net,
+click Continue to recover the last playback session. It is also available as
+`script-message-to mpvnet continue` for custom key bindings.
+
+Recovery checkpoints are written once per second while playback advances, and
+immediately after seeking, pausing or changing key playback settings. They include
+the original source, mpv's `watch-later-options` (independent of whether watch-later
+resume is enabled), volume/mute, speed, selected tracks, subtitle/audio delays,
+video adjustments, external tracks, and connection settings such as HTTP headers,
+referrer and yt-dlp format. Continue starts playing even if the checkpoint was
+paused. A failed connection keeps the checkpoint so Continue can be tried again
+after the network returns.
+
+The checkpoint is stored as `continue.json` in the config directory, including
+source URLs and any saved HTTP headers. Writes use a flushed temporary file and
+atomic replacement; `continue.json.bak` retains the previous complete checkpoint
+and is used if the primary file is unreadable. Recovery does not depend on a normal
+exit or shutdown handler. Delete both files to forget the saved session.
+
+An abrupt power loss can lose progress since the last completed checkpoint
+(normally up to one second, plus any storage/system delay). Exact seeking requires
+a seekable source and a reachable server; deleted files, expired direct URLs,
+missing external tracks, and live streams without DVR cannot be restored under
+every condition. A failed or imprecise restore reports an error and preserves the
+checkpoint. This restores playback state, not the previous session's temporary
+downloaded cache; reconnecting may need to buffer again.
+
+
+Saving a buffered video
+-----------------------
+
+Use `File > Save Buffered Video...` in the right-click context menu to save a
+network video as a Matroska (`.mkv`) file with the audio track selected when the
+Save dialog opens. Later track switches do not change that export. Separate audio
+and video sources are combined without re-encoding; the selected audio delay is
+preserved. The menu command is also available as
+`script-message-to mpvnet save-buffered-video` for custom bindings and menus.
+
+You can save before the entire movie is buffered. Complete, verified cached streams
+are reused. Missing beginnings, endings, seek gaps, and audio that was not buffered
+before a track switch are completed automatically in a background player. When
+mpv cannot prove that the selected stream is complete, that stream's source is read
+again from the beginning, rather than splicing potentially mismatched cache
+fragments. This can download more than the missing intervals, especially when
+audio and video share a container. Streams sharing a source are fetched together.
+The foreground playback position, pause state and selected tracks remain unchanged.
+The original connection headers, cookies, proxy and TLS settings are used.
+
+The export checks cached packet continuity, reads missing sources through EOF,
+and verifies that every selected stream keeps its packet count and duration after
+muxing. Original source gaps and legitimately shorter audio tracks are preserved.
+The resulting file is decoded before reporting success, including checking decoder
+error messages even when FFmpeg exits successfully. Bad cached data is fetched
+again automatically. Transient download failures
+are retried up to three times. Choose a destination in the Save dialog; an existing
+destination is replaced only after the complete export is verified. A canceled,
+failed or truncated download leaves the destination intact. Closing mpv.net cancels
+an active export. Temporary export files are removed after completion or failure.
+FFmpeg is included in release packages for validation and lossless muxing. For a
+source build, run `src/Tools/update-mpv.ps1` to obtain FFmpeg alongside libmpv, or
+provide `ffmpeg` on PATH. No FFprobe executable is required by the application.
+
+Network videos keep their last frame open at the end, including in playlists,
+so the buffer can still be saved. Use Next to continue to the next playlist entry.
+Stopping, opening another file, or exiting releases the playback buffer; it does
+not survive restarting the player. An export already started retains its chosen
+source and tracks independently of later foreground playback changes.
+
+Disk caching is enabled by default and the back buffer allows 512 MiB of packet
+metadata (typically sufficient for several hours). Video packets occupy disk space
+in mpv's cache directory, potentially as much as the entire video, while metadata
+still uses RAM. The disk cache is temporary and is removed when the video closes.
+These defaults can be overridden in `mpv.conf` with `cache-on-disk` and
+`demuxer-max-back-bytes`. Reduced or disabled caching makes saving read more from
+the source. mpv's experimental `dump-cache` can temporarily stall playback for a
+large cache export. Verification can also take time on long or high-resolution
+videos, and saving requires disk space for intermediate files as well as the final
+output. A source that stays unavailable must become accessible before saving can
+finish successfully.
 
 
 Input and context menu

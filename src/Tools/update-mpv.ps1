@@ -1,7 +1,7 @@
 
 <#
 
-Updates mpv (x64) and libmpv (x64 , ARM64).
+Updates mpv (x64), libmpv and the FFmpeg export tool (x64, ARM64).
 
 Files are downloaded from:
     https://github.com/shinchiro/mpv-winbuild-cmake/releases
@@ -45,9 +45,24 @@ function Download($apiURL, $pattern) {
 function Unpack($archieveFile, $outputRootDir) {
     $outputDir = Join-Path $outputRootDir $archieveFile.BaseName
     if (Test-Path $outputDir) { Remove-Item $outputDir -Recurse }
-    $process = Start-Process (Test $7ZipPath) @('x', $archieveFile.FullName, "-o$outputDir") -NoNewWindow -Wait
-    if ($process.ExitCode) { throw $process.ExitCode }
+    & (Test $7ZipPath) x $archieveFile.FullName "-o$outputDir" | Out-Null
+    if ($LASTEXITCODE) { throw $LASTEXITCODE }
     return Test $outputDir
+}
+
+# FFmpeg is used for complete-stream validation and lossless A/V muxing.
+function UpdateFFmpeg($destination, $architecture) {
+    $apiURL = "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest"
+    $archiveFile = Get-Item (Download $apiURL "^ffmpeg-$architecture-git-[0-9a-z]+\.7z$")
+    $archiveDir = Unpack $archiveFile $env:TEMP
+    try {
+        $executable = @(Get-ChildItem $archiveDir -Recurse -Filter 'ffmpeg.exe')
+        if ($executable.Count -ne 1) { throw 'Expected one FFmpeg executable in archive' }
+        Copy-Item $executable[0].FullName (Join-Path $destination 'ffmpeg.exe') -Force
+    } finally {
+        Remove-Item $archiveFile.FullName
+        Remove-Item $archiveDir -Recurse
+    }
 }
 
 # Update mpv x64
@@ -71,6 +86,7 @@ if (Test-Path (Join-Path $LibmpvDirX64 'libmpv-2.dll')) {
     $archiveFile = Get-Item (Download $apiURL "mpv-dev-x86_64-[0-9]{8}-git-[0-9a-z]+\.7z")
     $archiveDir = Unpack $archiveFile $env:TEMP
     Copy-Item $archiveDir\libmpv-2.dll $LibmpvDirX64 -Force
+    UpdateFFmpeg $LibmpvDirX64 "x86_64"
     Remove-Item $archiveFile.FullName
     Remove-Item $archiveDir -Recurse
 } else {
@@ -84,6 +100,7 @@ if (Test-Path (Join-Path $LibmpvDirARM64 'libmpv-2.dll')) {
     $archiveFile = Get-Item (Download $apiURL "mpv-dev-aarch64-[0-9]{8}-git-[0-9a-z]+\.7z")
     $archiveDir = Unpack $archiveFile $env:TEMP
     Copy-Item $archiveDir\libmpv-2.dll $LibmpvDirARM64 -Force
+    UpdateFFmpeg $LibmpvDirARM64 "aarch64"
     Remove-Item $archiveFile.FullName
     Remove-Item $archiveDir -Recurse
 } else {

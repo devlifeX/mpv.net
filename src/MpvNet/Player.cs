@@ -60,6 +60,7 @@ public class MainPlayer : MpvClient
     public List<MpvClient> Clients { get; } = new List<MpvClient>();
 
     List<StringPair>? _audioDevices;
+    public PlaybackRecovery Recovery { get; private set; } = null!;
 
     public event Action? Initialized;
     public event Action? Pause;
@@ -114,6 +115,10 @@ public class MainPlayer : MpvClient
         SetPropertyString("osc", "yes");
         SetPropertyString("config-dir", ConfigFolder);
         SetPropertyString("config", "yes");
+
+        // Keep network packets on disk so a watched video can be saved without downloading it again.
+        SetPropertyBool("cache-on-disk", true);
+        SetPropertyString("demuxer-max-back-bytes", "512MiB");
         
         UsedInputConfContent = App.InputConf.GetContent();
 
@@ -150,6 +155,8 @@ public class MainPlayer : MpvClient
             throw new Exception("mpv_create_client error");
 
         mpv_request_log_messages(Handle, "info");
+
+        Recovery = new PlaybackRecovery(this, System.IO.Path.Combine(GetPropertyString("config-dir"), "continue.json"));
 
         if (formHandle != IntPtr.Zero)
             TaskHelp.Run(EventLoop);
@@ -388,6 +395,9 @@ public class MainPlayer : MpvClient
     protected override void OnFileLoaded()
     {
         Duration = TimeSpan.FromSeconds(GetPropertyDouble("duration"));
+
+        if (GetPropertyBool("demuxer-via-network"))
+            SetPropertyString("file-local-options/keep-open", "always");
 
         if (App.StartSize == "video")
             WasInitialSizeSet = false;
