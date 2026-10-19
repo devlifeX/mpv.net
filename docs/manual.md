@@ -171,32 +171,54 @@ downloaded cache; reconnecting may need to buffer again.
 Saving a buffered video
 -----------------------
 
-Use `File > Save Buffered Video...` in the right-click context menu to save a fully
-buffered network video as a Matroska (`.mkv`) file without downloading it again.
-Choose a destination in the Save dialog. An existing destination is replaced only
-after the export succeeds. The menu command is also available as
+Use `File > Save Buffered Video...` in the right-click context menu to save a
+network video as a Matroska (`.mkv`) file with the audio track selected when the
+Save dialog opens. Later track switches do not change that export. Separate audio
+and video sources are combined without re-encoding; the selected audio delay is
+preserved. The menu command is also available as
 `script-message-to mpvnet save-buffered-video` for custom bindings and menus.
+
+You can save before the entire movie is buffered. Complete, verified cached streams
+are reused. Missing beginnings, endings, seek gaps, and audio that was not buffered
+before a track switch are completed automatically in a background player. When
+mpv cannot prove that the selected stream is complete, that stream's source is read
+again from the beginning, rather than splicing potentially mismatched cache
+fragments. This can download more than the missing intervals, especially when
+audio and video share a container. Streams sharing a source are fetched together.
+The foreground playback position, pause state and selected tracks remain unchanged.
+The original connection headers, cookies, proxy and TLS settings are used.
+
+The export checks cached packet continuity, reads missing sources through EOF,
+and verifies that every selected stream keeps its packet count and duration after
+muxing. Original source gaps and legitimately shorter audio tracks are preserved.
+The resulting file is decoded before reporting success, including checking decoder
+error messages even when FFmpeg exits successfully. Bad cached data is fetched
+again automatically. Transient download failures
+are retried up to three times. Choose a destination in the Save dialog; an existing
+destination is replaced only after the complete export is verified. A canceled,
+failed or truncated download leaves the destination intact. Closing mpv.net cancels
+an active export. Temporary export files are removed after completion or failure.
+FFmpeg is included in release packages for validation and lossless muxing. For a
+source build, run `src/Tools/update-mpv.ps1` to obtain FFmpeg alongside libmpv, or
+provide `ffmpeg` on PATH. No FFprobe executable is required by the application.
 
 Network videos keep their last frame open at the end, including in playlists,
 so the buffer can still be saved. Use Next to continue to the next playlist entry.
-Stopping, opening another file, or exiting releases the buffer; it does not survive
-restarting the player.
+Stopping, opening another file, or exiting releases the playback buffer; it does
+not survive restarting the player. An export already started retains its chosen
+source and tracks independently of later foreground playback changes.
 
 Disk caching is enabled by default and the back buffer allows 512 MiB of packet
 metadata (typically sufficient for several hours). Video packets occupy disk space
 in mpv's cache directory, potentially as much as the entire video, while metadata
 still uses RAM. The disk cache is temporary and is removed when the video closes.
 These defaults can be overridden in `mpv.conf` with `cache-on-disk` and
-`demuxer-max-back-bytes`; disabling caching or reducing the limits may prevent saving
-the whole video.
-
-Saving requires a single continuous cached range containing both the beginning and
-end. If the cache is incomplete, watch/buffer the missing parts first. Videos using
-selected external audio/video streams (such as some adaptive streaming URLs) are
-not supported, because mpv's cache export only writes the main demuxer. Export
-remuxes buffered packets without re-encoding; it does not reproduce the original
-container byte-for-byte. mpv's experimental `dump-cache` can temporarily stall
-playback for a large export, and some source codecs/containers may fail to remux.
+`demuxer-max-back-bytes`. Reduced or disabled caching makes saving read more from
+the source. mpv's experimental `dump-cache` can temporarily stall playback for a
+large cache export. Verification can also take time on long or high-resolution
+videos, and saving requires disk space for intermediate files as well as the final
+output. A source that stays unavailable must become accessible before saving can
+finish successfully.
 
 
 Input and context menu

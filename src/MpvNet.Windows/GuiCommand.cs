@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Globalization;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Windows.Interop;
 using System.Windows;
@@ -21,6 +23,8 @@ public class GuiCommand
 {
     Dictionary<string, Action<IList<string>>>? _commands;
     bool _savingBufferedVideo;
+    CancellationTokenSource? _saveCancellation;
+    Task? _saveTask;
 
     public event Action<float>? ScaleWindow;
     public event Action<string>? MoveWindow;
@@ -95,6 +99,12 @@ public class GuiCommand
         }
     }
 
+    public Task CancelVideoSaveAsync()
+    {
+        _saveCancellation?.Cancel();
+        return _saveTask ?? Task.CompletedTask;
+    }
+
     async void SaveBufferedVideo()
     {
         if (_savingBufferedVideo)
@@ -115,17 +125,7 @@ public class GuiCommand
                 return;
             }
 
-            if (BufferedVideo.HasExternalMedia(Player.GetPropertyString("track-list")))
-            {
-                Msg.ShowInfo(_("Saving videos with separate external audio or video streams is not supported."));
-                return;
-            }
-
-            if (BufferedVideo.GetCompleteRange(Player.GetPropertyString("demuxer-cache-state")) == null)
-            {
-                Msg.ShowInfo(_("The complete video is not buffered. Let it buffer from beginning to end before saving."));
-                return;
-            }
+            var selection = BufferedVideo.Capture(Player, generation);
 
             string title = Player.GetPropertyString("media-title");
             title = string.Concat(title.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
@@ -143,8 +143,15 @@ public class GuiCommand
                 return;
 
             Player.CommandV("show-text", _("Saving buffered video..."), "5000");
-            await BufferedVideo.SaveAsync(Player, dialog.FileName, generation);
-            Msg.ShowInfo(_("Buffered video saved.") + BR2 + dialog.FileName);
+            _saveCancellation = new();
+            _saveTask = BufferedVideo.SaveAsync(Player, dialog.FileName, selection, _saveCancellation.Token,
+                new Progress<string>(message => {
+                    if (_saveCancellation is { IsCancellationRequested: false })
+                        Player.CommandV("show-text", message, int.MaxValue.ToString(CultureInfo.InvariantCulture));
+                }));
+            await _saveTask;
+            if (!_saveCancellation.IsCancellationRequested)
+                Msg.ShowInfo(_("Buffered video saved.") + BR2 + dialog.FileName);
         }
         catch (OperationCanceledException)
         {
@@ -152,10 +159,14 @@ public class GuiCommand
         }
         catch (Exception ex)
         {
-            Msg.ShowError(ex.Message);
+            if (_saveCancellation?.IsCancellationRequested != true) Msg.ShowError(ex.Message);
         }
         finally
         {
+            if (_saveTask != null && Player.IsQuitNeeded) Player.CommandV("show-text", "");
+            _saveTask = null;
+            _saveCancellation?.Dispose();
+            _saveCancellation = null;
             _savingBufferedVideo = false;
         }
     }

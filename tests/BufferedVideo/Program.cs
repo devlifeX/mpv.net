@@ -35,13 +35,6 @@ Check(BufferedVideo.GetCompleteRange("""
     """) == (42.5, 46.75), "Complete non-zero timestamp range is accepted");
 Check(InputHelp.GetDefaults().Any(binding => binding.Command == "script-message-to mpvnet save-buffered-video"),
     "Default context menu includes Save Buffered Video");
-Check(BufferedVideo.HasExternalMedia("""
-    [{"type":"audio","external":true,"selected":true}]
-    """), "Separate selected audio is rejected");
-Check(!BufferedVideo.HasExternalMedia("""
-    [{"type":"sub","external":true,"selected":true},{"type":"audio","external":true,"selected":false}]
-    """), "External subtitles and unselected audio do not block export");
-
 // Optional end-to-end test: serve a short video over HTTP and pass its URL and an output directory.
 if (args.Length == 0)
     return;
@@ -117,10 +110,10 @@ try
     try
     {
         await BufferedVideo.SaveAsync(Player, protectedFile, Player.PlaybackGeneration);
-        throw new Exception("Expected incomplete-cache rejection");
+        throw new Exception("Expected stopped-file rejection");
     }
     catch (InvalidOperationException) { }
-    Check(File.ReadAllText(protectedFile) == "existing destination", "Incomplete cache preserves the destination");
+    Check(File.ReadAllText(protectedFile) == "existing destination", "Stopped playback preserves the destination");
 
     Check(Player.GetPropertyString("keep-open") == "no", "Network keep-open setting is restored after stop");
 }

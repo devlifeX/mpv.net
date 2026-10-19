@@ -40,6 +40,7 @@ public partial class MainForm : Form
     int _taskbarButtonCreatedMessage;
     int _cursorAutohide = 1000;
 
+    bool _waitingForVideoSave;
     bool _contextMenuIsReady;
     bool _wasMaximized;
     bool _maxSizeSet;
@@ -1422,9 +1423,22 @@ public partial class MainForm : Form
         }
     }
 
-    protected override void OnFormClosing(FormClosingEventArgs e)
+    protected override async void OnFormClosing(FormClosingEventArgs e)
     {
         base.OnFormClosing(e);
+        if (e.Cancel) return;
+        var save = GuiCommand.Current.CancelVideoSaveAsync();
+        if (!save.IsCompleted)
+        {
+            e.Cancel = true;
+            if (_waitingForVideoSave) return;
+            _waitingForVideoSave = true;
+            try { await save; }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Terminal.WriteError(ex); }
+            Close();
+            return;
+        }
 
         if (Player.IsQuitNeeded)
             Player.CommandV("quit");
