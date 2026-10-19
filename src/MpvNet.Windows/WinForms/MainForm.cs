@@ -69,6 +69,7 @@ public partial class MainForm : Form
             GuiCommand.Current.ShowMenu += GuiCommand_ShowMenu;
 
             Player.Init(Handle, true);
+            Player.Recovery.Failed += message => Msg.ShowError(message);
 
             Player.ObserveProperty("window-maximized", PropChangeWindowMaximized); // bool methods not working correctly
             Player.ObserveProperty("window-minimized", PropChangeWindowMinimized); // bool methods not working correctly

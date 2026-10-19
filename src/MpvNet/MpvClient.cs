@@ -428,6 +428,22 @@ public class MpvClient
         return "";
     }
 
+    public bool TryGetPropertyString(string name, out string value)
+    {
+        value = "";
+        if (Handle == IntPtr.Zero)
+            return false;
+
+        mpv_error error = mpv_get_property(Handle, GetUtf8Bytes(name),
+            mpv_format.MPV_FORMAT_STRING, out IntPtr buffer);
+        if (error < 0)
+            return false;
+
+        value = ConvertFromUtf8(buffer);
+        mpv_free(buffer);
+        return true;
+    }
+
     public void SetPropertyString(string name, string value)
     {
         if (Handle == IntPtr.Zero)

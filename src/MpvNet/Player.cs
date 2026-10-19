@@ -60,6 +60,7 @@ public class MainPlayer : MpvClient
     public List<MpvClient> Clients { get; } = new List<MpvClient>();
 
     List<StringPair>? _audioDevices;
+    public PlaybackRecovery Recovery { get; private set; } = null!;
 
     public event Action? Initialized;
     public event Action? Pause;
@@ -154,6 +155,8 @@ public class MainPlayer : MpvClient
             throw new Exception("mpv_create_client error");
 
         mpv_request_log_messages(Handle, "info");
+
+        Recovery = new PlaybackRecovery(this, System.IO.Path.Combine(GetPropertyString("config-dir"), "continue.json"));
 
         if (formHandle != IntPtr.Zero)
             TaskHelp.Run(EventLoop);

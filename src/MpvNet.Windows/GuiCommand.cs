@@ -32,6 +32,7 @@ public class GuiCommand
     public Dictionary<string, Action<IList<string>>> Commands => _commands ??= new()
     {
         ["add-to-path"] = args => AddToPath(),
+        ["continue"] = args => ContinuePlayback(),
         ["edit-conf-file"] = EditCongFile,
         ["load-audio"] = LoadAudio,
         ["load-sub"] = LoadSubtitle,
@@ -76,6 +77,22 @@ public class GuiCommand
         Window? win = Activator.CreateInstance(winType) as Window;
         new WindowInteropHelper(win).Owner = MainForm.Instance!.Handle;
         win?.ShowDialog();
+    }
+
+    async void ContinuePlayback()
+    {
+        try
+        {
+            await Player.Recovery.ContinueAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            // libmpv cancels pending commands during shutdown.
+        }
+        catch (Exception ex)
+        {
+            Msg.ShowError(ex.Message);
+        }
     }
 
     async void SaveBufferedVideo()

@@ -29,7 +29,15 @@ public class InputConf
         var confbindings = InputHelp.Parse(Content);
 
         if (HasMenu)
+        {
+            var resume = confbindings.FirstOrDefault(binding => binding.Command == InputHelp.ContinueCommand)
+                ?? InputHelp.CreateContinueBinding();
+            resume.Comment = _("Continue");
+            resume.IsMenu = true;
+            confbindings.RemoveAll(binding => binding.Command == InputHelp.ContinueCommand);
+            confbindings.Insert(0, resume);
             return (confbindings, confbindings);
+        }
 
         var defaultBindings = InputHelp.GetDefaults();
 

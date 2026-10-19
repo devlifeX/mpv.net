@@ -13,6 +13,7 @@ Table of contents
 * [Support](#support)
 * [Config Folder](#config-folder)
 * [Input and context menu](#input-and-context-menu)
+* [Continuing interrupted playback](#continuing-interrupted-playback)
 * [Saving a buffered video](#saving-a-buffered-video)
 * [Command Line Interface](#command-line-interface)
 * [Terminal](#terminal)
@@ -131,6 +132,40 @@ The most important files and folders in the config folder are:
 - `input.conf` file containing mpv key and mouse input bindings.
 - `scripts` folder containing mpv user scripts.
 - `script-opts` folder containing user scripts configuration files.
+
+
+Continuing interrupted playback
+-------------------------------
+
+**Continue** is the first item in the right-click context menu, including legacy
+custom menus. It resumes healthy paused playback without discarding its buffer.
+After an interruption, or when playback is stalled, it reopens the last successfully
+checkpointed file/URL at its saved fractional position. After restarting mpv.net,
+click Continue to recover the last playback session. It is also available as
+`script-message-to mpvnet continue` for custom key bindings.
+
+Recovery checkpoints are written once per second while playback advances, and
+immediately after seeking, pausing or changing key playback settings. They include
+the original source, mpv's `watch-later-options` (independent of whether watch-later
+resume is enabled), volume/mute, speed, selected tracks, subtitle/audio delays,
+video adjustments, external tracks, and connection settings such as HTTP headers,
+referrer and yt-dlp format. Continue starts playing even if the checkpoint was
+paused. A failed connection keeps the checkpoint so Continue can be tried again
+after the network returns.
+
+The checkpoint is stored as `continue.json` in the config directory, including
+source URLs and any saved HTTP headers. Writes use a flushed temporary file and
+atomic replacement; `continue.json.bak` retains the previous complete checkpoint
+and is used if the primary file is unreadable. Recovery does not depend on a normal
+exit or shutdown handler. Delete both files to forget the saved session.
+
+An abrupt power loss can lose progress since the last completed checkpoint
+(normally up to one second, plus any storage/system delay). Exact seeking requires
+a seekable source and a reachable server; deleted files, expired direct URLs,
+missing external tracks, and live streams without DVR cannot be restored under
+every condition. A failed or imprecise restore reports an error and preserves the
+checkpoint. This restores playback state, not the previous session's temporary
+downloaded cache; reconnecting may need to buffer again.
 
 
 Saving a buffered video
