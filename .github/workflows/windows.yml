@@ -1,4 +1,4 @@
-name: Windows portable build
+name: Windows setup build
 
 on:
   push:
@@ -35,11 +35,44 @@ jobs:
             mkdir -p "$destination"
             msgfmt "$po" -o "$destination/mpvnet.mo"
           done
-      - name: Check packaged native libraries and player startup on Windows
+      - name: Build Windows installer with Inno Setup
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $package = Join-Path $PWD 'artifacts/mpv.net-win-x64'
+          $output = Join-Path $PWD 'artifacts/installer'
+          & 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe' /Qp "/DMyAppSourceDir=$package" "/O$output" 'src/Setup/Inno/inno-setup.iss'
+          if ($LASTEXITCODE) { throw 'Windows installer compilation failed.' }
+      - name: Install and verify every packaged file
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setups = @(Get-ChildItem 'artifacts/installer/*-setup-x64.exe')
+          if ($setups.Count -ne 1) { throw 'Expected exactly one Windows setup executable.' }
+          $source = Join-Path $PWD 'artifacts/mpv.net-win-x64'
+          $installed = Join-Path $env:RUNNER_TEMP 'mpv.net installed'
+          $log = Join-Path $env:RUNNER_TEMP 'mpvnet-install.log'
+          $process = Start-Process $setups[0].FullName -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER',
+            "/DIR=`"$installed`"", "/LOG=`"$log`""
+          ) -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            Get-Content $log
+            throw "Setup failed with exit code $($process.ExitCode)."
+          }
+          foreach ($file in Get-ChildItem $source -Recurse -File) {
+            $relative = [IO.Path]::GetRelativePath($source, $file.FullName)
+            $target = Join-Path $installed $relative
+            if (-not (Test-Path $target) -or (Get-FileHash $file.FullName).Hash -ne (Get-FileHash $target).Hash) {
+              throw "Installed file is missing or differs from the build: $relative"
+            }
+          }
+          Write-Output 'Setup installed every packaged file with matching hashes.'
+      - name: Check packaged native libraries and player startup on Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Join-Path $env:RUNNER_TEMP 'mpv.net installed'
           # An installed Vulkan SDK on the runner must not hide a missing package DLL.
           $loader = Join-Path $package 'vulkan-1.dll'
           if (-not (Test-Path $loader)) { throw 'Packaged Vulkan loader is missing.' }
@@ -80,7 +113,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $package = Join-Path $PWD 'artifacts/mpv.net-win-x64'
+          $package = Join-Path $env:RUNNER_TEMP 'mpv.net installed'
           $pipeName = 'mpvnet-gui-smoke-' + [guid]::NewGuid().ToString('N')
           $config = Join-Path $env:RUNNER_TEMP 'mpvnet-gui-config'
           New-Item $config -ItemType Directory -Force | Out-Null
@@ -115,11 +148,28 @@ jobs:
             $pipe.Dispose()
             if (-not $process.HasExited) { $process.Kill($true) }
           }
-      - name: Upload ready-to-run portable package
+      - name: Verify uninstall preserves user configuration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installed = Join-Path $env:RUNNER_TEMP 'mpv.net installed'
+          $config = Join-Path $installed 'portable_config/mpv.conf'
+          New-Item (Split-Path $config) -ItemType Directory -Force | Out-Null
+          'volume=42' | Set-Content $config
+          $process = Start-Process "$installed/unins000.exe" -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          ) -Wait -PassThru
+          if ($process.ExitCode -ne 0 -or (Test-Path "$installed/mpvnet.exe")) {
+            throw 'Uninstall failed to remove the installed application.'
+          }
+          if (-not (Test-Path $config) -or (Get-Content $config -Raw).Trim() -ne 'volume=42') {
+            throw 'Uninstall removed or modified user configuration.'
+          }
+      - name: Upload tested Windows setup
         uses: actions/upload-artifact@v4
         with:
-          name: mpv.net-win-x64
-          path: artifacts/mpv.net-win-x64/
+          name: mpv.net-setup-x64
+          path: artifacts/installer/*-setup-x64.exe
           if-no-files-found: error
           retention-days: 30
 
@@ -132,26 +182,23 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: mpv.net-win-x64
+          name: mpv.net-setup-x64
           path: package
-      - name: Create portable ZIP
-        working-directory: package
-        run: zip -q -r "$RUNNER_TEMP/mpv.net-win-x64.zip" .
       - name: Publish Windows release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: windows-build-${{ github.run_number }}-${{ github.run_attempt }}
         run: |
           cat > release-notes.md <<'EOF'
-          Windows x64 portable build with Continue playback and complete stream saving using the selected audio.
+          Windows x64 installer with Continue playback and complete stream saving using the selected audio.
 
-          Download **mpv.net-win-x64.zip**, extract the entire archive, then run **mpvnet.exe** on Windows 10/11 x64.
+          Download the **setup-x64.exe** file under Assets and run it to install mpv.net on Windows 10/11 x64.
           The .NET 10 runtime, libmpv, its required Vulkan loader, MediaInfo and FFmpeg are included.
           Website streams that use yt-dlp require yt-dlp.exe beside mpvnet.exe or on PATH.
           EOF
           printf '\nCommit: %s\nBuild: %s/%s/actions/runs/%s\n' \
             "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> release-notes.md
-          gh release create "$RELEASE_TAG" "$RUNNER_TEMP/mpv.net-win-x64.zip" \
+          gh release create "$RELEASE_TAG" package/*-setup-x64.exe \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "mpv.net Windows x64 - build $GITHUB_RUN_NUMBER" \
             --notes-file release-notes.md --latest

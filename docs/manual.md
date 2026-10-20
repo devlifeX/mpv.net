@@ -44,10 +44,10 @@ differences are documented in this manual under [Differences compared to mpv](#d
 Download
 --------
 
-[Stable and beta portable and setup via GitHub download](../../../releases)
+[Windows x64 setup via GitHub Releases](../../../releases)
 
-Successful builds of `main` publish a Windows x64 portable ZIP to Releases.
-Extract the entire archive and run `mpvnet.exe`; this package includes the .NET 10 runtime.
+Successful builds of `main` publish a Windows x64 setup executable to Releases.
+Run the `setup-x64.exe` installer; it includes the .NET 10 runtime and all bundled playback dependencies.
 
 [Changelog](changelog.md)
 
@@ -58,7 +58,7 @@ Installation
 #### Requirements
 
 1. Windows 10 or higher.
-2. [.NET Desktop Runtime 10.0](https://dotnet.microsoft.com/en-us/download/dotnet/10.0) for framework-dependent builds; it is bundled in the Windows x64 portable release.
+2. [.NET Desktop Runtime 10.0](https://dotnet.microsoft.com/en-us/download/dotnet/10.0) for framework-dependent builds; it is bundled in the Windows x64 setup release.
 
 Internet streaming requires:
 

@@ -1,4 +1,4 @@
-<# Builds the Windows x64 portable package, including .NET and native tools. #>
+<# Builds the self-contained Windows x64 application files used by the installer. #>
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -64,13 +64,13 @@ foreach ($name in @('mpvnet.exe', 'mpvnet.com', 'libmpv-2.dll', 'vulkan-1.dll', 
 
 $commit = git -C $root rev-parse HEAD
 @"
-mpv.net Windows x64 portable build
+mpv.net Windows x64 build
 Commit: $commit
 Runtime: .NET 10, self-contained (no separate .NET installation required)
 libmpv and FFmpeg: $mpvRelease
 Native build sources: https://github.com/shinchiro/mpv-winbuild-cmake
 MediaInfo 26.10: https://mediaarea.net/en/MediaInfo
 Vulkan loader 1.4.363.0: https://vulkan.lunarg.com/sdk/home
-Start: extract the entire archive, then run mpvnet.exe on Windows 10/11 x64.
+Start: run mpvnet.exe after installing the Windows x64 setup on Windows 10/11.
 Website streams that use yt-dlp require yt-dlp.exe beside mpvnet.exe or on PATH.
 "@ | Set-Content "$output/build-info.txt" -Encoding utf8
