@@ -61,6 +61,24 @@ public class MainPlayer : MpvClient
 
     List<StringPair>? _audioDevices;
     public PlaybackRecovery Recovery { get; private set; } = null!;
+    PlaybackByteCache? _byteCache;
+    internal VideoRangeSource? FindByteCache(string url) => _byteCache?.Find(url);
+
+    async void CacheLoad(ulong id)
+    {
+        try
+        {
+            string source = GetPropertyString("stream-open-filename");
+            if (!PlaybackByteCache.IsDirectMedia(source)) return;
+            _byteCache ??= new();
+            string? cached = await _byteCache.AddAsync(source, BufferedVideo.ConnectionSettings(this));
+            if (cached != null) SetPropertyString("stream-open-filename", cached);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Net.Http.HttpRequestException or
+            OperationCanceledException or System.Net.Sockets.SocketException or ObjectDisposedException)
+        { /* Preserve normal playback if byte caching cannot be set up. */ }
+        finally { mpv_hook_continue(Handle, id); }
+    }
 
     public event Action? Initialized;
     public event Action? Pause;
@@ -157,6 +175,9 @@ public class MainPlayer : MpvClient
         mpv_request_log_messages(Handle, "info");
 
         Recovery = new PlaybackRecovery(this, System.IO.Path.Combine(GetPropertyString("config-dir"), "continue.json"));
+        LoadHook += CacheLoad;
+        mpv_hook_add(Handle, 0, "on_load", 50);
+        Shutdown += () => _byteCache?.Dispose();
 
         if (formHandle != IntPtr.Zero)
             TaskHelp.Run(EventLoop);

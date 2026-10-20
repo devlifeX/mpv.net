@@ -9,7 +9,8 @@ namespace MpvNet;
 
 // Immutable selection taken before the Save dialog; later track switches cannot change the export.
 public sealed record BufferedVideoSelection(long Generation, double Duration,
-    double AudioDelay, BufferedVideoTrack[] Tracks, Dictionary<string, string> Options);
+    double AudioDelay, BufferedVideoTrack[] Tracks, Dictionary<string, string> Options,
+    VideoRangeSource? ByteCache = null);
 
 public sealed record BufferedVideoTrack(string Type, string Source, int Id, bool CanUseCache);
 
@@ -21,6 +22,14 @@ public static class BufferedVideo
         "network-timeout", "edition", "config-dir"
     ];
 
+    internal static Dictionary<string, string> ConnectionSettings(MpvClient player)
+    {
+        var options = new Dictionary<string, string>();
+        foreach (string name in ConnectionOptions)
+            if (player.TryGetPropertyString(name, out var value) && value != "") options[name] = value;
+        return options;
+    }
+
     public static BufferedVideoSelection Capture(MpvClient player, long generation)
     {
         if (player.PlaybackGeneration != generation || !player.TryGetPropertyString("path", out var path) || path == "")
@@ -31,6 +40,8 @@ public static class BufferedVideo
         var tracks = document.RootElement.EnumerateArray().ToArray();
         string source = player.GetPropertyString("stream-open-filename");
         if (source == "") source = path;
+        var byteCache = (player as MainPlayer)?.FindByteCache(source);
+        if (byteCache != null) source = byteCache.Url;
         var selected = new List<BufferedVideoTrack>();
         foreach (var track in tracks)
         {
@@ -48,14 +59,12 @@ public static class BufferedVideo
         if (!selected.Any(t => t.Type == "video"))
             throw new InvalidOperationException(_("Open a video before saving."));
 
-        var options = new Dictionary<string, string>();
-        foreach (string name in ConnectionOptions)
-            if (player.TryGetPropertyString(name, out var value) && value != "") options[name] = value;
+        var options = ConnectionSettings(player);
         double duration = player.GetPropertyDouble("duration");
         double delay = player.GetPropertyDouble("audio-delay");
         if (player.PlaybackGeneration != generation || player.GetPropertyString("track-list") != json)
             throw new InvalidOperationException(_("The playing file changed. Please try again."));
-        return new(generation, duration, delay, selected.ToArray(), options);
+        return new(generation, duration, delay, selected.ToArray(), options, byteCache);
     }
 
     static bool Flag(JsonElement element, string name) => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
@@ -76,17 +85,22 @@ public static class BufferedVideo
         SaveAsync(player, filename, Capture(player, playbackGeneration));
 
     public static async Task SaveAsync(MpvClient player, string filename, BufferedVideoSelection selection,
-        CancellationToken cancellationToken = default, IProgress<string>? progress = null)
+        CancellationToken cancellationToken = default, IProgress<string>? progress = null,
+        VideoDownloadControl? control = null, IProgress<DownloadSnapshot>? downloadProgress = null)
     {
         using var canceled = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         void Shutdown() => canceled.Cancel();
         player.Shutdown += Shutdown;
         var token = canceled.Token;
+        control ??= new();
+        bool success = false;
+        string parts = Path.GetFullPath(filename) + ".mpvnet-parts";
         string directory = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(filename))!, ".mpvnet-save-" + Guid.NewGuid().ToString("N"));
         try
         {
             Directory.CreateDirectory(directory);
             var tools = new MediaExportTools();
+            bool freshSources = false;
             await tools.CheckAsync(token);
             token.ThrowIfCancellationRequested();
             string cache = Path.Combine(directory, "cache.mkv");
@@ -128,41 +142,70 @@ public static class BufferedVideo
                 int download = 0;
                 foreach (var source in missing.GroupBy(t => t.Source))
                 {
+                    await control.WaitAsync(token);
                     progress?.Report(_("Downloading complete selected streams..."));
                     string input = Path.Combine(directory, "download-" + download++ + ".mkv");
-                    for (int attempt = 0; ; attempt++)
+                    var sourceTracks = selection.Tracks.Where(t => t.Source == source.Key).ToArray();
+                    VideoRangeSource? bytes = !freshSources && selection.ByteCache?.Url == source.Key ? selection.ByteCache : null;
+                    bool ownsBytes = false;
+                    try
                     {
-                        try
+                        if (bytes == null && PlaybackByteCache.IsDirectMedia(source.Key))
                         {
-                            // Record the other selected track from the same source as an EOF/duration witness.
-                            var sourceTracks = selection.Tracks.Where(t => t.Source == source.Key).ToArray();
-                            double sourceDuration = await DownloadAsync(sourceTracks, selection.Options, input, token);
-                            var measured = new Dictionary<BufferedVideoTrack, ExportCoverage>();
-                            foreach (var track in sourceTracks)
+                            try
                             {
-                                var value = await tools.MeasureAsync(input, track, token);
-                                if (value == null) throw new IOException(_("The selected stream contained no complete media packets."));
-                                measured[track] = value;
+                                bytes = await VideoRangeSource.OpenAsync(source.Key, selection.Options,
+                                    Path.Combine(directory, "bytes-" + download), token);
+                                ownsBytes = bytes != null;
                             }
-                            double expected = sourceDuration > 0 ? sourceDuration : selection.Duration;
-                            if (!measured.Values.Any(c => c.Duration >= expected - c.Tolerance))
-                                throw new IOException(_("The source ended before the complete selected stream was received. Reconnect and save again."));
-                            // A genuine shorter audio track or intentional source gap must remain unchanged.
-                            foreach (var track in source) coverage[track] = measured[track];
-                            break;
+                            catch (System.Net.Http.HttpRequestException) { /* libmpv may support the transport. */ }
                         }
-                        catch (IOException) when (attempt < 2)
+                        if (bytes != null)
                         {
-                            token.ThrowIfCancellationRequested();
-                            progress?.Report(_("Connection interrupted. Retrying the selected streams..."));
-                            await Task.Delay(500 * (attempt + 1), token);
+                            PreparePartsDirectory(parts);
+                            progress?.Report(_("Downloading missing byte chunks..."));
+                            await bytes.DownloadAsync(Path.Combine(parts, (freshSources ? "repair-" : "") + (download - 1).ToString(CultureInfo.InvariantCulture)),
+                                control, downloadProgress, token);
+                            string raw = Path.Combine(directory, "source-" + download + ".media");
+                            await bytes.AssembleAsync(raw, token);
+                            sourceTracks = sourceTracks.Select(t => t with { Source = raw }).ToArray();
+                        }
+                        else progress?.Report(_("This stream requires a single connection. Pause and resume are available while this window stays open."));
+                        for (int attempt = 0; ; attempt++)
+                        {
+                            try
+                            {
+                                // Record the other selected track from the same source as an EOF/duration witness.
+                                double sourceDuration = await DownloadAsync(sourceTracks, selection.Options, input, control, token);
+                                var measured = new Dictionary<BufferedVideoTrack, ExportCoverage>();
+                                foreach (var track in sourceTracks)
+                                {
+                                    var value = await tools.MeasureAsync(input, track, token);
+                                    if (value == null) throw new IOException(_("The selected stream contained no complete media packets."));
+                                    measured[track] = value;
+                                }
+                                double expected = sourceDuration > 0 ? sourceDuration : selection.Duration;
+                                if (!measured.Values.Any(c => c.Duration >= expected - c.Tolerance))
+                                    throw new IOException(_("The source ended before the complete selected stream was received. Reconnect and save again."));
+                                // A genuine shorter audio track or intentional source gap must remain unchanged.
+                                foreach (var track in source) coverage[track] = measured[sourceTracks.First(t => t.Type == track.Type)];
+                                break;
+                            }
+                            catch (IOException) when (attempt < 2)
+                            {
+                                token.ThrowIfCancellationRequested();
+                                progress?.Report(_("Connection interrupted. Retrying the selected streams..."));
+                                await Task.Delay(500 * (attempt + 1), token);
+                            }
                         }
                     }
+                    finally { if (ownsBytes) bytes?.Dispose(); }
                     foreach (var track in source) inputs.Add((track, input));
                 }
                 inputs = inputs.OrderBy(i => i.Track.Type == "video" ? 0 : 1).ToList();
 
                 progress?.Report(_("Verifying and saving video..."));
+                await control.WaitAsync(token);
                 string temporary = Path.Combine(directory, "output" + Path.GetExtension(filename));
                 try
                 {
@@ -177,27 +220,44 @@ public static class BufferedVideo
                     }
                     await tools.VerifyDecodeAsync(temporary, token);
                 }
-                catch (IOException) when (inputs.Any(i => i.Filename == cache))
+                catch (IOException) when (!freshSources && (inputs.Any(i => i.Filename == cache) || selection.ByteCache != null))
                 {
                     // Corrupt cached payloads also need a fresh source pass, even if their timestamps look complete.
                     File.Delete(cache);
+                    freshSources = true;
                     continue;
                 }
                 token.ThrowIfCancellationRequested();
                 File.Move(temporary, filename, true);
+                success = true;
                 break;
             }
         }
         finally
         {
             player.Shutdown -= Shutdown;
-            if (Directory.Exists(directory)) Directory.Delete(directory, true);
+            // A cleanup error must not turn an already verified, saved output into a failed job.
+            try { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            if (success && File.Exists(Path.Combine(parts, ".mpvnet-download")))
+                try { Directory.Delete(parts, true); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
+    }
+
+    static void PreparePartsDirectory(string directory)
+    {
+        string marker = Path.Combine(directory, ".mpvnet-download");
+        if (Directory.Exists(directory) && !File.Exists(marker))
+            throw new IOException(_("The download parts folder already exists and is not owned by mpv.net. Choose another destination."));
+        Directory.CreateDirectory(directory);
+        if (!File.Exists(marker)) File.WriteAllText(marker, "mpv.net download parts v1");
     }
 
     internal static string Number(double value) => value.ToString("R", CultureInfo.InvariantCulture);
 
-    static async Task<double> DownloadAsync(BufferedVideoTrack[] tracks, Dictionary<string, string> options, string filename, CancellationToken token)
+    static async Task<double> DownloadAsync(BufferedVideoTrack[] tracks, Dictionary<string, string> options, string filename,
+        VideoDownloadControl control, CancellationToken token)
     {
         var worker = new MpvClient { Handle = mpv_create() };
         if (worker.Handle == 0) throw new IOException(_("Could not start the stream download."));
@@ -234,7 +294,7 @@ public static class BufferedVideo
             double duration = 0;
             worker.FileLoaded += () => {
                 duration = worker.GetPropertyDouble("duration");
-                worker.SetPropertyBool("pause", false);
+                worker.SetPropertyBool("pause", control.IsPaused);
             };
             worker.EndFile += reason => finished.TrySetResult(reason);
             mpv_request_log_messages(worker.Handle, "error");
@@ -242,6 +302,12 @@ public static class BufferedVideo
                 _("The selected stream could not be read or written completely. Check the connection and free disk space.")));
             loop = Task.Run(worker.EventLoop);
             worker.CommandV("loadfile", tracks[0].Source);
+            while (!finished.Task.IsCompleted)
+            {
+                token.ThrowIfCancellationRequested();
+                worker.SetPropertyBool("pause", control.IsPaused);
+                await Task.WhenAny(finished.Task, Task.Delay(150, token));
+            }
             var reason = await finished.Task.WaitAsync(token);
             if (reason != mpv_end_file_reason.MPV_END_FILE_REASON_EOF || !File.Exists(filename))
                 throw new IOException(_("The selected stream could not be downloaded. Check the connection and save again."));

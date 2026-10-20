@@ -81,7 +81,9 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-completion-") as directory:
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            requests.append((self.path, self.headers.get("X-Export")))
+            # A one-byte capability probe contains no reusable media packets.
+            if self.headers.get("Range") != "bytes=0-0":
+                requests.append((self.path, self.headers.get("X-Export")))
             if not online:
                 failures.append(self.path)
                 if mode == "retry":
@@ -115,7 +117,7 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-completion-") as directory:
                     self.wfile.write(data[offset:min(offset + 4096, end + 1)])
                     if slow:
                         time.sleep(0.05)
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass
 
         def log_message(self, *args):

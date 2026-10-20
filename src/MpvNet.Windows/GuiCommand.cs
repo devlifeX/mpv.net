@@ -133,7 +133,7 @@ public class GuiCommand
 
             using var dialog = new SaveFileDialog {
                 Title = _("Save Buffered Video"),
-                Filter = _("Matroska video (*.mkv)|*.mkv"),
+                Filter = VideoDownloadForm.FileFilter,
                 DefaultExt = "mkv",
                 FileName = "video - " + title + ".mkv",
                 OverwritePrompt = true
@@ -142,16 +142,11 @@ public class GuiCommand
             if (dialog.ShowDialog() != DialogResult.OK)
                 return;
 
-            Player.CommandV("show-text", _("Saving buffered video..."), "5000");
             _saveCancellation = new();
-            _saveTask = BufferedVideo.SaveAsync(Player, dialog.FileName, selection, _saveCancellation.Token,
-                new Progress<string>(message => {
-                    if (_saveCancellation is { IsCancellationRequested: false })
-                        Player.CommandV("show-text", message, int.MaxValue.ToString(CultureInfo.InvariantCulture));
-                }));
+            var download = new VideoDownloadForm(dialog.FileName, selection, _saveCancellation);
+            _saveTask = download.RunAsync((control, progress, chunks) => BufferedVideo.SaveAsync(Player,
+                dialog.FileName, selection, _saveCancellation.Token, progress, control, chunks));
             await _saveTask;
-            if (!_saveCancellation.IsCancellationRequested)
-                Msg.ShowInfo(_("Buffered video saved.") + BR2 + dialog.FileName);
         }
         catch (OperationCanceledException)
         {

@@ -1,6 +1,9 @@
 
 #define MyAppName "mpv.net"
 #define MyAppExeName "mpvnet.exe"
+#ifndef MyAppSuffix
+  #define MyAppSuffix ""
+#endif
 #ifndef MyAppSourceDir
   #define MyAppSourceDir "..\..\MpvNet.Windows\bin\Debug"
 #endif
@@ -14,10 +17,11 @@ AppPublisher=Frank Skare (stax76)
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-Compression=lzma2
+Compression=lzma2/ultra64
+SolidCompression=yes
 DefaultDirName={autopf}\{#MyAppName}
-OutputBaseFilename=mpv.net-v{#MyAppVersion}-setup-x64
-OutputDir=E:\Desktop
+OutputBaseFilename=mpv.net-v{#MyAppVersion}-setup-x64{#MyAppSuffix}
+OutputDir=..\..\..\artifacts\installer
 DefaultGroupName={#MyAppName}
 SetupIconFile=..\..\MpvNet.Windows\mpv-icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
@@ -28,4 +32,4 @@ PrivilegesRequiredOverridesAllowed=dialog
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 
 [Files]
-Source: "{#MyAppSourceDir}\*"; DestDir: "{app}"; Excludes: "win-x64,win-arm64"; Flags: ignoreversion recursesubdirs createallsubdirs;
+Source: "{#MyAppSourceDir}\*"; DestDir: "{app}"; Excludes: "win-x64,win-arm64,*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs;

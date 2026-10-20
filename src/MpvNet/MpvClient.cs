@@ -23,6 +23,7 @@ public class MpvClient
     public event Action? AudioReconfig;                      // audio-reconfig      MPV_EVENT_AUDIO_RECONFIG
     public event Action? Seek;                               // seek                MPV_EVENT_SEEK
     public event Action? PlaybackRestart;                    // playback-restart    MPV_EVENT_PLAYBACK_RESTART
+    public event Action<ulong>? LoadHook;
 
     public Dictionary<string, List<Action>> PropChangeActions { get; set; } = [];
     public Dictionary<string, List<Action<int>>> IntPropChangeActions { get; set; } = [];
@@ -48,6 +49,11 @@ public class MpvClient
             {
                 switch (evt.event_id)
                 {
+                    case mpv_event_id.MPV_EVENT_HOOK:
+                        var hook = Marshal.PtrToStructure<mpv_event_hook>(evt.data);
+                        if (LoadHook != null) LoadHook(hook.id);
+                        else mpv_hook_continue(Handle, hook.id);
+                        break;
                     case mpv_event_id.MPV_EVENT_SHUTDOWN:
                         foreach (var pending in _pendingCommands.ToArray())
                             if (_pendingCommands.TryRemove(pending.Key, out var completion))

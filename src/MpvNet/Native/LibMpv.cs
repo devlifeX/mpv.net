@@ -11,6 +11,16 @@ namespace MpvNet.Native;
 public static class LibMpv
 {
     [DllImport("libmpv-2.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern mpv_error mpv_hook_add(nint handle, ulong userdata,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name, int priority);
+
+    [DllImport("libmpv-2.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern mpv_error mpv_hook_continue(nint handle, ulong id);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct mpv_event_hook { public nint name; public ulong id; }
+
+    [DllImport("libmpv-2.dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern nint mpv_create();
 
     [DllImport("libmpv-2.dll", CallingConvention = CallingConvention.Cdecl)]

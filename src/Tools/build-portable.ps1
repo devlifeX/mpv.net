@@ -1,16 +1,20 @@
-<# Builds the self-contained Windows x64 application files used by the installer. #>
+<# Builds Windows x64 application files. -FrameworkDependent omits the .NET runtime. #>
+param([switch]$FrameworkDependent)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $root = (Resolve-Path "$PSScriptRoot/../..").Path
-$output = Join-Path $root 'artifacts/mpv.net-win-x64'
+$packageName = if ($FrameworkDependent) { 'mpv.net-win-x64-framework-dependent' } else { 'mpv.net-win-x64' }
+$output = Join-Path $root "artifacts/$packageName"
 $downloads = Join-Path $root 'artifacts/dependencies'
 $sevenZip = 'C:/Program Files/7-Zip/7z.exe'
 New-Item $output, $downloads -ItemType Directory -Force | Out-Null
 
 function Download($url, $name, $sha256) {
     $file = Join-Path $downloads $name
-    Invoke-WebRequest $url -OutFile $file -MaximumRetryCount 3 -RetryIntervalSec 3
+    if (-not (Test-Path $file) -or (Get-FileHash $file -Algorithm SHA256).Hash -ne $sha256) {
+        Invoke-WebRequest $url -OutFile $file -MaximumRetryCount 3 -RetryIntervalSec 3
+    }
     if ((Get-FileHash $file -Algorithm SHA256).Hash -ne $sha256) {
         throw "Checksum mismatch: $name"
     }
@@ -22,8 +26,12 @@ function Extract($archive, $directory) {
     if ($LASTEXITCODE) { throw "Failed to extract $archive" }
 }
 
+$selfContained = if ($FrameworkDependent) { 'false' } else { 'true' }
+$singleFile = if ($FrameworkDependent) { 'false' } else { 'true' }
+$platformArgs = if ($FrameworkDependent) { @('-p:PlatformTarget=x64') } else { @('--runtime', 'win-x64') }
 dotnet publish "$root/src/MpvNet.Windows/MpvNet.Windows.csproj" `
-    --configuration Release --runtime win-x64 --self-contained true --output $output
+    --configuration Release @platformArgs --self-contained $selfContained --output $output `
+    "-p:PublishSingleFile=$singleFile" -p:DebugType=None -p:DebugSymbols=false
 if ($LASTEXITCODE) { throw 'Windows publish failed.' }
 
 # Pin and verify the native inputs so rebuilding a commit uses the same tools.
@@ -63,10 +71,11 @@ foreach ($name in @('mpvnet.exe', 'mpvnet.com', 'libmpv-2.dll', 'vulkan-1.dll', 
 }
 
 $commit = git -C $root rev-parse HEAD
+$runtimeDescription = if ($FrameworkDependent) { '.NET 10 Desktop Runtime x64 required (https://dotnet.microsoft.com/download/dotnet/10.0)' } else { '.NET 10, self-contained (no separate .NET installation required)' }
 @"
 mpv.net Windows x64 build
 Commit: $commit
-Runtime: .NET 10, self-contained (no separate .NET installation required)
+Runtime: $runtimeDescription
 libmpv and FFmpeg: $mpvRelease
 Native build sources: https://github.com/shinchiro/mpv-winbuild-cmake
 MediaInfo 26.10: https://mediaarea.net/en/MediaInfo

@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-continue-test-") as directory:
                         return
                     self.wfile.write(data[offset:min(offset + 4096, end + 1)])
                     time.sleep(0.02)
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass
 
         def log_message(self, *args):
