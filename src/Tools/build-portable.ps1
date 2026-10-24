@@ -28,7 +28,7 @@ function Extract($archive, $directory) {
 
 $selfContained = if ($FrameworkDependent) { 'false' } else { 'true' }
 $singleFile = if ($FrameworkDependent) { 'false' } else { 'true' }
-$platformArgs = if ($FrameworkDependent) { @('-p:PlatformTarget=x64') } else { @('--runtime', 'win-x64') }
+[string[]]$platformArgs = if ($FrameworkDependent) { @('-p:PlatformTarget=x64') } else { @('--runtime', 'win-x64') }
 dotnet publish "$root/src/MpvNet.Windows/MpvNet.Windows.csproj" `
     --configuration Release @platformArgs --self-contained $selfContained --output $output `
     "-p:PublishSingleFile=$singleFile" -p:DebugType=None -p:DebugSymbols=false
