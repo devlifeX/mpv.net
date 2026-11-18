@@ -32,6 +32,7 @@ try
     string source = url + (mode is "external" or "short-audio" or "corrupt" or "external-video" ? "/video.mp4" : "/dual.mp4");
     if (mode == "short-internal") source = url + "/short-dual.mp4";
     if (mode == "complete-mkv") source = url + "/dual.mkv";
+    if (mode == "complete-hevc") source = url + "/hevc.mkv";
     if (mode == "hls") source = url + "/master.m3u8";
     if (mode == "edl")
     {
@@ -74,7 +75,7 @@ try
     if (mode == "holes") Check(BufferedVideo.GetCompleteRange(Player.GetPropertyString("demuxer-cache-state")) == null,
         "Missing cache ranges require completion");
     if (mode is "delay" or "negative-delay") Player.SetPropertyDouble("audio-delay", mode == "delay" ? 0.37 : -0.37);
-    bool completeByteCache = mode is "complete-bytes" or "complete-bytes-output-error" or "complete-mkv";
+    bool completeByteCache = mode.StartsWith("complete-", StringComparison.Ordinal);
     var selection = BufferedVideo.Capture(Player, Player.PlaybackGeneration);
     if (completeByteCache)
     {
@@ -108,7 +109,7 @@ try
     File.WriteAllText(destination, "existing destination");
     using var canceled = new CancellationTokenSource();
     Task shutdown = Task.CompletedTask;
-    var progress = new InlineProgress(message => {
+    var progress = new InlineProgress<string>(message => {
         if (!message.StartsWith("Downloading")) return;
         if (mode == "cancel") canceled.CancelAfter(100);
         if (mode == "shutdown") shutdown = Task.Run(async () => {
@@ -123,9 +124,16 @@ try
     }
     try
     {
-        await BufferedVideo.SaveAsync(Player, destination, selection, canceled.Token, progress).WaitAsync(TimeSpan.FromSeconds(35));
+        var stages = new List<VideoSaveProgress>();
+        var saveProgress = new InlineProgress<VideoSaveProgress?>(stage => { if (stage != null) stages.Add(stage); });
+        await BufferedVideo.SaveAsync(Player, destination, selection, canceled.Token, progress,
+            saveProgress: saveProgress).WaitAsync(TimeSpan.FromSeconds(35));
         Check(mode is not ("cancel" or "shutdown" or "failure" or "truncated" or "complete-bytes-output-error"), "Expected download success");
         Check(new FileInfo(destination).Length > 1000, "Complete video and pinned selected audio saved");
+        var verification = stages.Where(stage => stage.Message.StartsWith("Verifying that")).Select(s => s.Fraction).ToArray();
+        Check(verification.FirstOrDefault() == 0 && verification.Any(f => f is > 0 and < 1),
+            "Video verification reports actual decoder progress after download");
+        Check(stages[^1].Message.StartsWith("Saving the verified file"), "Verification finishes before replacing the destination");
     }
     catch (OperationCanceledException) when (mode is "cancel" or "shutdown")
     {
@@ -162,7 +170,7 @@ class IdentityTranslator : ITranslator
     public string GetParticularString(string context, string text) => text;
 }
 
-class InlineProgress(Action<string> report) : IProgress<string>
+class InlineProgress<T>(Action<T> report) : IProgress<T>
 {
-    public void Report(string message) => report(message);
+    public void Report(T message) => report(message);
 }

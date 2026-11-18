@@ -70,7 +70,7 @@ internal sealed class MediaExportTools
         ?? (track.Type == "video" ? "v:0" : "a:0");
 
     public async Task MuxAsync(List<(BufferedVideoTrack Track, string Filename, int? StreamIndex)> inputs,
-        double audioDelay, string output, CancellationToken token)
+        double audioDelay, string output, CancellationToken token, double duration, Action<double>? progress)
     {
         var args = new List<string> { "-nostdin", "-v", "error", "-xerror", "-y" };
         foreach (var input in inputs)
@@ -82,12 +82,32 @@ internal sealed class MediaExportTools
         for (int i = 0; i < inputs.Count; i++)
             args.AddRange(["-map", i + ":" + Selector(inputs[i].Track, inputs[i].StreamIndex)]);
         args.AddRange(["-c", "copy", "-avoid_negative_ts", "make_non_negative", output]);
-        await RunAsync("ffmpeg", args, null, token, _("Could not create the output video."));
+        await RunWithProgressAsync(args, duration, progress, token, _("Could not create the output video."));
     }
 
-    public Task VerifyDecodeAsync(string filename, CancellationToken token) =>
-        RunAsync("ffmpeg", ["-nostdin", "-v", "error", "-xerror", "-err_detect", "explode", "-threads", "2", "-i", filename,
-            "-map", "0:v:0", "-map", "0:a:0?", "-f", "null", "-"], null, token, _("The output video failed decoding verification."));
+    public Task VerifyDecodeAsync(string filename, CancellationToken token, double duration, Action<double>? progress) =>
+        RunWithProgressAsync(["-nostdin", "-v", "error", "-xerror", "-err_detect", "explode", "-threads", "4", "-i", filename,
+            "-map", "0:v:0", "-map", "0:a:0?", "-f", "null", "-"], duration, progress, token, _("The output video failed decoding verification."));
+
+    static Task RunWithProgressAsync(IEnumerable<string> args, double duration, Action<double>? progress,
+        CancellationToken token, string failureMessage)
+    {
+        if (progress == null || !double.IsFinite(duration) || duration <= 0)
+            return RunAsync("ffmpeg", args, null, token, failureMessage);
+
+        const string key = "out_time_us=";
+        double last = 0;
+        return RunAsync("ffmpeg", ["-progress", "pipe:1", "-stats_period", "0.25", .. args], line => {
+            if (!line.StartsWith(key, StringComparison.Ordinal) ||
+                !long.TryParse(line.AsSpan(key.Length), NumberStyles.Integer, CultureInfo.InvariantCulture, out long microseconds)) return;
+            double fraction = Math.Clamp(microseconds / 1_000_000.0 / duration, 0, 0.99);
+            if (fraction > last)
+            {
+                last = fraction;
+                progress(fraction);
+            }
+        }, token, failureMessage);
+    }
 
     static async Task RunAsync(string name, IEnumerable<string> args, Action<string>? line, CancellationToken token,
         string? failureMessage = null)

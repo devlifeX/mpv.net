@@ -279,14 +279,20 @@ public sealed class VideoRangeSource : IDisposable
         finally { ended.Cancel(); await reporting; progress?.Report(Snapshot(control)); }
     }
 
-    public async Task AssembleAsync(string filename, CancellationToken token)
+    public async Task AssembleAsync(string filename, CancellationToken token, Action<double>? progress = null)
     {
         await using var output = new FileStream(filename, FileMode.Create, FileAccess.Write, FileShare.None, 65536, true);
+        var interval = Stopwatch.StartNew();
         for (int i = 0; i < Count; i++)
         {
             if (!HasBlock(i)) throw new IOException(_("A required download chunk is missing."));
             await using var input = File.OpenRead(BlockPath(i));
             await input.CopyToAsync(output, token);
+            if (progress != null && interval.ElapsedMilliseconds >= 200)
+            {
+                progress((double)output.Position / Length);
+                interval.Restart();
+            }
         }
         if (output.Length != Length) throw new IOException(_("The downloaded file size is incorrect."));
     }

@@ -10,7 +10,7 @@ import time
 
 project = Path(__file__).resolve().parent / "StreamCompletion.csproj"
 dotnet = os.environ.get("DOTNET", "dotnet")
-modes = os.environ.get("COMPLETION_TEST_MODES", "complete-bytes,complete-bytes-output-error,complete-mkv,external,external-video,short-audio,short-internal,corrupt,internal,source-change,edl,hls,watch-later,holes,delay,negative-delay,cancel,shutdown,retry,failure,truncated").split(",")
+modes = os.environ.get("COMPLETION_TEST_MODES", "complete-bytes,complete-bytes-output-error,complete-mkv,complete-hevc,external,external-video,short-audio,short-internal,corrupt,internal,source-change,edl,hls,watch-later,holes,delay,negative-delay,cancel,shutdown,retry,failure,truncated").split(",")
 subprocess.run([dotnet, "build", str(project), "--nologo", "-v:q"], check=True)
 
 
@@ -42,6 +42,10 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-completion-") as directory:
         "-g", "24", "-c:a", "aac", "-movflags", "+faststart", root / "dual.mp4")
     run("-i", root / "dual.mp4", "-map", "0:v:0", "-c", "copy", "-movflags", "+faststart", root / "video.mp4")
     run("-i", root / "dual.mp4", "-map", "0:a:0", "-map", "0:v", "-map", "0:a:1", "-c", "copy", root / "dual.mkv")
+    if "complete-hevc" in modes:
+        subprocess.run(["ffmpeg", "-v", "error", "-i", str(root / "dual.mp4"), "-map", "0", "-c:a", "copy",
+                        "-c:v", "libx265", "-pix_fmt", "yuv420p10le", "-preset", "ultrafast",
+                        "-x265-params", "pools=2:frame-threads=2:log-level=error", str(root / "hevc.mkv")], check=True)
     for index in [1, 2]:
         run("-i", root / "dual.mp4", "-map", f"0:a:{index-1}", "-c", "copy", "-movflags", "+faststart", root / f"audio{index}.m4a")
     run("-i", root / "audio2.m4a", "-t", "3", "-c", "copy", root / "short.m4a")
@@ -177,11 +181,14 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-completion-") as directory:
                 metadata = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(saved)]))
                 starts = [float(s["start_time"]) for s in metadata["streams"]]
                 assert abs(starts[1] - starts[0] - (0.37 if mode == "delay" else -0.37)) < 0.05, "Selected audio delay must be preserved"
-            assert frames(saved) == (frames(root / "other.mp4") if mode == "external-video" else original_frames), "All video frames must match, including the missing prefix"
+            video_frames = frames(root / "hevc.mkv") if mode == "complete-hevc" else frames(root / "other.mp4") if mode == "external-video" else original_frames
+            assert frames(saved) == video_frames, "All video frames must match, including the missing prefix"
             packets = audio(saved)
             selected_audio = audio(root / "short.m4a") if mode in ["short-audio", "short-internal"] else expected_audio
-            if mode in ["complete-bytes", "complete-mkv"]:
-                assert packets == audio(root / ("dual.mkv" if mode == "complete-mkv" else "dual.mp4"), 1), "Local finalization preserves every selected AAC packet"
+            if mode in ["complete-bytes", "complete-mkv", "complete-hevc"]:
+                source_name = {"complete-bytes": "dual.mp4", "complete-mkv": "dual.mkv", "complete-hevc": "hevc.mkv"}[mode]
+                selected_audio = audio(root / source_name, 1)
+                assert packets == selected_audio, "Local finalization preserves every selected AAC packet"
             assert packets == selected_audio or packets == selected_audio[1:], "Every audio packet must come from selected audio 2"
             print(f"PASS: {mode}: complete video frames and audio 2 packets match the source", flush=True)
     finally:

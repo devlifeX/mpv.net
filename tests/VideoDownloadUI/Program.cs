@@ -41,6 +41,43 @@ internal static class Program
             form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
             bitmap.Save(file, ImageFormat.Png);
         }
+
+        using var save = new VideoDownloadForm(@"E:\Video\Saved video.mkv", selection, canceled);
+        var verification = new TaskCompletionSource();
+        var finished = new TaskCompletionSource();
+        var run = save.RunAsync(async (control, status, chunks, stages) => {
+            chunks.Report(new(1024, 1024, 0, false, [new(0, 1024, 1024, true, "Complete")]));
+            await verification.Task;
+            stages.Report(new("Verifying video and audio", 0.35));
+            await finished.Task;
+        });
+        var saveControls = Descendants(save).ToArray();
+        var start = saveControls.OfType<Button>().Single(b => b.Text == "Start");
+        var pause = saveControls.OfType<Button>().Single(b => b.Text == "Pause");
+        start.PerformClick();
+        PumpUntil(() => saveControls.OfType<Label>().Any(l => l.Text.Contains("100")));
+        Check(pause.Enabled, "Pause is enabled during transfer");
+        verification.SetResult();
+        PumpUntil(() => saveControls.OfType<Label>().Any(l => l.Text.Contains("Verifying video and audio")));
+        Check(saveControls.OfType<Label>().Any(l => l.Text.Contains("Download complete.") && l.Text.Contains("35")),
+            "Final verification shows its own progress after download reaches 100 percent");
+        Check(!pause.Enabled, "Pause is disabled during final verification");
+        finished.SetResult();
+        PumpUntil(() => run.IsCompleted);
+        run.GetAwaiter().GetResult();
+        Check(saveControls.OfType<Label>().Any(l => l.Text.StartsWith("Video saved and verified.")),
+            "The dialog reports completion only after final verification returns");
+    }
+
+    static void PumpUntil(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!condition() && DateTime.UtcNow < deadline)
+        {
+            Application.DoEvents();
+            Thread.Sleep(10);
+        }
+        if (!condition()) throw new Exception("The save dialog did not reach the expected stage.");
     }
     static IEnumerable<Control> Descendants(Control parent) => parent.Controls.Cast<Control>().SelectMany(c => new[] { c }.Concat(Descendants(c)));
     static void Check(bool value, string text) { if (!value) throw new Exception(text); Console.WriteLine("PASS: " + text); }

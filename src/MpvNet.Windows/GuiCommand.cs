@@ -143,9 +143,11 @@ public class GuiCommand
                 return;
 
             _saveCancellation = new();
-            var download = new VideoDownloadForm(dialog.FileName, selection, _saveCancellation);
-            _saveTask = download.RunAsync((control, progress, chunks) => BufferedVideo.SaveAsync(Player,
-                dialog.FileName, selection, _saveCancellation.Token, progress, control, chunks));
+            var token = _saveCancellation.Token;
+            string destination = dialog.FileName;
+            var download = new VideoDownloadForm(destination, selection, _saveCancellation);
+            _saveTask = download.RunAsync((control, progress, chunks, saving) => Task.Run(() =>
+                BufferedVideo.SaveAsync(Player, destination, selection, token, progress, control, chunks, saving), token));
             await _saveTask;
         }
         catch (OperationCanceledException)

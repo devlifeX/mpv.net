@@ -13,8 +13,10 @@ The runner generates H.264 video and two distinct AAC tones. Its HTTP server
 requires an authentication header for every request and supports byte ranges.
 It exercises the production export with:
 
-- Fully cached MP4 and MKV files with the network disabled before save, including
-  selected audio, Unicode filenames, and a mux failure that preserves the existing file.
+- Fully cached MP4 and MKV files (including 10-bit HEVC) with the network disabled
+  before save, including selected audio, Unicode filenames, and a mux failure that
+  preserves the existing file. Verification must report actual decoder progress
+  before it replaces the destination file.
 - Separately selected external video and audio, including remapping foreground track IDs.
 - A fully cached video and separately selected audio 2, verifying that video is
   not downloaded again and every selected audio packet is preserved.

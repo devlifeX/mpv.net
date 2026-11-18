@@ -28,8 +28,11 @@ public sealed class VideoDownloadForm : Form
     readonly Button _pause = new DownloadButton { Text = _("Pause"), AutoSize = true, Enabled = false };
     readonly Button _close = new DownloadButton { Text = _("Cancel (keep chunks)"), AutoSize = true };
     readonly CheckBox _openFolder = new() { Text = _("Open destination folder when complete"), AutoSize = true };
+    readonly System.Windows.Forms.Timer _saveTimer = new() { Interval = 150 };
+    readonly Stopwatch _stageClock = new();
     TaskCompletionSource<bool>? _startSignal;
     DownloadSnapshot? _snapshot;
+    VideoSaveProgress? _saveProgress;
     bool _running;
     bool _finished;
     readonly string _filename;
@@ -102,6 +105,7 @@ public sealed class VideoDownloadForm : Form
         _chunks.DrawItem += (sender, e) => { if (_chunks.View != View.Details) e.DrawDefault = true; };
         _chunks.ClientSizeChanged += (_, _) => SizeLastColumn();
         _map.Paint += PaintMap;
+        _saveTimer.Tick += (_, _) => RenderSaveProgress();
         _start.Click += (_, _) => _startSignal?.TrySetResult(true);
         _pause.Click += (_, _) => {
             if (_control.IsPaused) { _control.Resume(); _pause.Text = _("Pause"); }
@@ -164,10 +168,12 @@ public sealed class VideoDownloadForm : Form
     void Cancel()
     {
         _startSignal?.TrySetResult(false); _cancel.Cancel(); _control.Resume(); _close.Enabled = false;
+        if (_running) _status.Text = _("Cancelling...");
         if (!_running) Close();
     }
 
-    public async Task RunAsync(Func<VideoDownloadControl, IProgress<string>, IProgress<DownloadSnapshot>, Task> operation)
+    public async Task RunAsync(Func<VideoDownloadControl, IProgress<string>, IProgress<DownloadSnapshot>,
+        IProgress<VideoSaveProgress?>, Task> operation)
     {
         Show(MainForm.Instance!);
         while (!_cancel.IsCancellationRequested)
@@ -181,8 +187,12 @@ public sealed class VideoDownloadForm : Form
             try
             {
                 await operation(_control, new Progress<string>(text => {
-                    if (!IsDisposed) _status.Text = text;
-                }), new Progress<DownloadSnapshot>(snapshot => { if (!IsDisposed) UpdateProgress(snapshot); }));
+                    if (!IsDisposed && _running && !_cancel.IsCancellationRequested) _status.Text = text;
+                }), new Progress<DownloadSnapshot>(snapshot => {
+                    if (!IsDisposed && _running && !_cancel.IsCancellationRequested) UpdateProgress(snapshot);
+                }), new Progress<VideoSaveProgress?>(stage => {
+                    if (!IsDisposed && _running && !_cancel.IsCancellationRequested) UpdateSaveProgress(stage);
+                }));
                 _finished = true;
                 _progress.Value = 1000;
                 _status.Text = _("Video saved and verified.") + Environment.NewLine + _filename;
@@ -198,14 +208,62 @@ public sealed class VideoDownloadForm : Form
                 _status.Text = ex.Message + Environment.NewLine + _("Complete chunks are kept. Click Retry to continue.");
                 _start.Text = _("Retry"); _connections.Enabled = true;
             }
-            finally { _running = false; _pause.Enabled = false; _control.Resume(); _pause.Text = _("Pause"); }
+            finally
+            {
+                _running = false;
+                _saveTimer.Stop();
+                _saveProgress = null;
+                _progress.Animation = null;
+                _pause.Enabled = false;
+                _speed.Enabled = true;
+                _control.Resume();
+                _pause.Text = _("Pause");
+            }
         }
         if (_cancel.IsCancellationRequested) Close();
+    }
+
+    void UpdateSaveProgress(VideoSaveProgress? stage)
+    {
+        if (stage?.Message != _saveProgress?.Message) _stageClock.Restart();
+        _saveProgress = stage;
+        _pause.Enabled = _speed.Enabled = stage == null;
+        if (stage == null)
+        {
+            _saveTimer.Stop();
+            _progress.Animation = null;
+            if (_snapshot != null) UpdateProgress(_snapshot);
+        }
+        else
+        {
+            // The download gate was passed. A click queued before this callback must not pause a later stage.
+            _control.Resume();
+            _pause.Text = _("Pause");
+            RenderSaveProgress();
+            _saveTimer.Start();
+        }
+    }
+
+    void RenderSaveProgress()
+    {
+        if (_saveProgress is not { } stage || _cancel.IsCancellationRequested) return;
+        _status.Text = stage.Message;
+        double? fraction = stage.Fraction;
+        _progress.Value = (int)((fraction ?? 0) * 1000);
+        _progress.Animation = fraction is > 0 ? null : (float)(_stageClock.Elapsed.TotalSeconds % 2 / 2);
+        string downloaded = _snapshot is { } snapshot && snapshot.Total > 0 && snapshot.Received == snapshot.Total
+            ? _("Download complete.") + " " + Bytes(snapshot.Total) + Environment.NewLine : "";
+        string stagePercent = fraction is > 0
+            ? _("Current step:") + " " + fraction.Value.ToString("P0", CultureInfo.CurrentCulture) + "   " : "";
+        _statistics.Text = downloaded + stagePercent + _("Time in this step:") + " " + _stageClock.Elapsed.ToString(@"hh\:mm\:ss");
     }
 
     void UpdateProgress(DownloadSnapshot snapshot)
     {
         _snapshot = snapshot;
+        _chunks.VirtualListSize = snapshot.Chunks.Length;
+        _chunks.Invalidate(); _map.Invalidate();
+        if (_saveProgress != null) return;
         double fraction = snapshot.Total > 0 ? (double)snapshot.Received / snapshot.Total : 0;
         _progress.Value = Math.Clamp((int)(fraction * 1000), 0, 1000);
         string eta = snapshot.BytesPerSecond > 0 && !snapshot.Paused
@@ -215,8 +273,12 @@ public sealed class VideoDownloadForm : Form
             _("Speed:") + " " + Bytes(snapshot.Paused ? 0 : (long)snapshot.BytesPerSecond) + "/s     " + _("Time left:") + " " + eta +
             Environment.NewLine + _("Resume capability:") + " " + _("Yes — complete chunks are kept beside the destination") +
             (snapshot.Paused ? "   • " + _("Paused") : "");
-        _chunks.VirtualListSize = snapshot.Chunks.Length;
-        _chunks.Invalidate(); _map.Invalidate();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _saveTimer.Dispose();
+        base.Dispose(disposing);
     }
 
     void PaintMap(object? sender, PaintEventArgs e)
@@ -239,7 +301,9 @@ public sealed class VideoDownloadForm : Form
     sealed class DownloadProgressStrip : Control
     {
         int _value;
+        float? _animation;
         public int Value { get => _value; set { _value = Math.Clamp(value, 0, 1000); Invalidate(); } }
+        public float? Animation { get => _animation; set { _animation = value; Invalidate(); } }
         public DownloadProgressStrip() => SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
             ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         protected override void OnPaint(PaintEventArgs e)
@@ -247,7 +311,10 @@ public sealed class VideoDownloadForm : Form
             e.Graphics.Clear(Field);
             using var fill = new SolidBrush(Accent);
             using var border = new Pen(Border);
-            e.Graphics.FillRectangle(fill, 0, 0, Width * Value / 1000, Height);
+            if (Animation is float position)
+                e.Graphics.FillRectangle(fill, (Width + Width / 5) * position - Width / 5, 0, Width / 5, Height);
+            else
+                e.Graphics.FillRectangle(fill, 0, 0, Width * Value / 1000, Height);
             e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
         }
     }

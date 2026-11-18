@@ -15,6 +15,8 @@ public sealed record BufferedVideoSelection(long Generation, double Duration,
 public sealed record BufferedVideoTrack(string Type, string Source, int Id, bool CanUseCache,
     int? FileStreamIndex = null);
 
+public sealed record VideoSaveProgress(string Message, double? Fraction = null);
+
 public static class BufferedVideo
 {
     static readonly string[] ConnectionOptions = [
@@ -91,7 +93,8 @@ public static class BufferedVideo
 
     public static async Task SaveAsync(MpvClient player, string filename, BufferedVideoSelection selection,
         CancellationToken cancellationToken = default, IProgress<string>? progress = null,
-        VideoDownloadControl? control = null, IProgress<DownloadSnapshot>? downloadProgress = null)
+        VideoDownloadControl? control = null, IProgress<DownloadSnapshot>? downloadProgress = null,
+        IProgress<VideoSaveProgress?>? saveProgress = null)
     {
         using var canceled = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         void Shutdown() => canceled.Cancel();
@@ -106,6 +109,7 @@ public static class BufferedVideo
             Directory.CreateDirectory(directory);
             var tools = new MediaExportTools();
             bool freshSources = false;
+            progress?.Report(_("Preparing to save the video..."));
             await tools.CheckAsync(token);
             token.ThrowIfCancellationRequested();
             string cache = Path.Combine(directory, "cache.mkv");
@@ -119,6 +123,7 @@ public static class BufferedVideo
                 ? GetCompleteRange(player.GetPropertyString("demuxer-cache-state")) : null;
             if (range != null && cacheable.Count > 0)
             {
+                progress?.Report(_("Reading the player buffer..."));
                 var result = await player.CommandVAsync("dump-cache", Number(range.Value.Start), Number(range.Value.End + 1), cache);
                 token.ThrowIfCancellationRequested();
                 // A changed selection during dumping makes the cache untrustworthy, not the pinned selection.
@@ -148,6 +153,7 @@ public static class BufferedVideo
                 int download = 0;
                 foreach (var source in missing.GroupBy(t => t.Source))
                 {
+                    saveProgress?.Report(null);
                     await control.WaitAsync(token);
                     string input = Path.Combine(directory, "download-" + download++ + ".mkv");
                     var sourceTracks = selection.Tracks.Where(t => t.Source == source.Key).ToArray();
@@ -176,10 +182,13 @@ public static class BufferedVideo
                             }
                             else downloadProgress?.Report(bytes.Snapshot(control));
 
-                            progress?.Report(_("Preparing the complete local video..."));
                             await control.WaitAsync(token);
+                            string assembling = _("Assembling the local video from cached chunks...");
+                            saveProgress?.Report(new(assembling, 0));
                             string raw = Path.Combine(directory, "source-" + download + ".media");
-                            await bytes.AssembleAsync(raw, token);
+                            await bytes.AssembleAsync(raw, token, saveProgress == null ? null :
+                                fraction => saveProgress.Report(new(assembling, fraction)));
+                            saveProgress?.Report(new(_("Reading the selected tracks...")));
 
                             // A complete byte cache is already the original file. Read the selected
                             // streams directly instead of playing and recording the file again.
@@ -237,12 +246,16 @@ public static class BufferedVideo
                 }
                 inputs = inputs.OrderBy(i => i.Track.Type == "video" ? 0 : 1).ToList();
 
-                progress?.Report(_("Verifying and saving video..."));
                 await control.WaitAsync(token);
+                double duration = coverage.Values.Max(c => c.Duration) + Math.Abs(selection.AudioDelay);
+                string building = _("Building the output file...");
+                saveProgress?.Report(new(building, 0));
                 string temporary = Path.Combine(directory, "output" + Path.GetExtension(filename));
-                await tools.MuxAsync(inputs, selection.AudioDelay, temporary, token);
+                await tools.MuxAsync(inputs, selection.AudioDelay, temporary, token,
+                    duration, saveProgress == null ? null : fraction => saveProgress.Report(new(building, fraction)));
                 try
                 {
+                    saveProgress?.Report(new(_("Checking the saved tracks...")));
                     foreach (var track in selection.Tracks)
                     {
                         var saved = await tools.MeasureAsync(temporary, track, token);
@@ -251,7 +264,10 @@ public static class BufferedVideo
                             Math.Abs(saved.Duration - expected.Duration) > Math.Max(saved.Tolerance, expected.Tolerance))
                             throw new IOException(_("The saved file did not contain the complete selected video and audio. Please save again."));
                     }
-                    await tools.VerifyDecodeAsync(temporary, token);
+                    string verifying = _("Verifying that video and audio decode correctly...");
+                    saveProgress?.Report(new(verifying, 0));
+                    await tools.VerifyDecodeAsync(temporary, token, duration,
+                        saveProgress == null ? null : fraction => saveProgress.Report(new(verifying, fraction)));
                 }
                 catch (IOException) when (!freshSources && inputs.Any(i => i.Filename == cache))
                 {
@@ -261,6 +277,7 @@ public static class BufferedVideo
                     continue;
                 }
                 token.ThrowIfCancellationRequested();
+                saveProgress?.Report(new(_("Saving the verified file to the destination...")));
                 File.Move(temporary, filename, true);
                 success = true;
                 break;
