@@ -40,6 +40,7 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-completion-") as directory:
         "-t", "4", "-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "libx264", "-preset", "ultrafast",
         "-g", "24", "-c:a", "aac", "-movflags", "+faststart", root / "dual.mp4")
     run("-i", root / "dual.mp4", "-map", "0:v:0", "-c", "copy", "-movflags", "+faststart", root / "video.mp4")
+    run("-i", root / "dual.mp4", "-map", "0:a:0", "-map", "0:v", "-map", "0:a:1", "-c", "copy", root / "dual.mkv")
     for index in [1, 2]:
         run("-i", root / "dual.mp4", "-map", f"0:a:{index-1}", "-c", "copy", "-movflags", "+faststart", root / f"audio{index}.m4a")
     run("-i", root / "audio2.m4a", "-t", "3", "-c", "copy", root / "short.m4a")
@@ -107,6 +108,8 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-completion-") as directory:
             else:
                 self.send_response(200)
             self.send_header("Accept-Ranges", "bytes")
+            if mode.startswith("complete-"):
+                self.send_header("ETag", '"complete-video"')
             self.send_header("Content-Type", "video/mp4")
             self.send_header("Content-Length", str(end - start + 1))
             self.end_headers()
@@ -126,7 +129,7 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-completion-") as directory:
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        for mode in os.environ.get("COMPLETION_TEST_MODES", "external,external-video,short-audio,short-internal,corrupt,internal,source-change,edl,hls,watch-later,holes,delay,negative-delay,cancel,shutdown,retry,failure,truncated").split(","):
+        for mode in os.environ.get("COMPLETION_TEST_MODES", "complete-bytes,complete-bytes-output-error,complete-mkv,external,external-video,short-audio,short-internal,corrupt,internal,source-change,edl,hls,watch-later,holes,delay,negative-delay,cancel,shutdown,retry,failure,truncated").split(","):
             repaired = False
             online, truncate, slow = True, False, mode in ["cancel", "shutdown"]
             output = root / mode
@@ -142,7 +145,8 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-completion-") as directory:
                     print(mode + ": " + line.rstrip(), flush=True)
                     if "DOWNLOAD_READY" in line:
                         repaired = mode == "corrupt"
-                        online, truncate = mode not in ["failure", "retry"], mode == "truncated"
+                        online = mode not in ["failure", "retry"] and not mode.startswith("complete-")
+                        truncate = mode == "truncated"
                         process.stdin.write("ready\n")
                         process.stdin.flush()
                 assert process.wait(timeout=5) == 0, f"{mode} failed"
@@ -158,9 +162,11 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-completion-") as directory:
                 assert sum(path == "/video.mp4" for path, _ in requests[start:]) > 1, f"Corrupt cached video must be repaired from the source: {requests[start:]}"
             if mode == "external":
                 assert sum(path == "/video.mp4" for path, _ in requests[start:]) == 1, "Complete cached video must not be downloaded again"
-            if mode in ["cancel", "shutdown", "failure", "truncated"]:
+            if mode.startswith("complete-"):
+                assert len(failures) == failed_before, "Finalizing a complete byte cache must not contact the server"
+            if mode in ["cancel", "shutdown", "failure", "truncated", "complete-bytes-output-error"]:
                 continue
-            saved = output / "saved.mkv"
+            saved = output / "ویدیو saved.mkv"
             metadata = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(saved)]))
             assert [s["codec_type"] for s in metadata["streams"]] == ["video", "audio"]
             if mode in ["delay", "negative-delay"]:
@@ -169,6 +175,8 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-completion-") as directory:
             assert frames(saved) == (frames(root / "other.mp4") if mode == "external-video" else original_frames), "All video frames must match, including the missing prefix"
             packets = audio(saved)
             selected_audio = audio(root / "short.m4a") if mode in ["short-audio", "short-internal"] else expected_audio
+            if mode in ["complete-bytes", "complete-mkv"]:
+                assert packets == audio(root / ("dual.mkv" if mode == "complete-mkv" else "dual.mp4"), 1), "Local finalization preserves every selected AAC packet"
             assert packets == selected_audio or packets == selected_audio[1:], "Every audio packet must come from selected audio 2"
             print(f"PASS: {mode}: complete video frames and audio 2 packets match the source", flush=True)
     finally:

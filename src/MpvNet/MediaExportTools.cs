@@ -21,16 +21,17 @@ internal sealed class MediaExportTools
         await RunAsync("ffmpeg", ["-version"], null, token);
     }
 
-    public async Task<ExportCoverage?> MeasureAsync(string filename, BufferedVideoTrack track, CancellationToken token)
+    public async Task<ExportCoverage?> MeasureAsync(string filename, BufferedVideoTrack track, CancellationToken token,
+        int? streamIndex = null)
     {
         double first = double.PositiveInfinity, end = double.NegativeInfinity, previous = double.NaN;
         double largestGap = 0, largestPacket = 0, previousDuration = 0;
         int count = 0;
-        string selector = track.Type == "video" ? "v:0" : "a:0";
+        string selector = Selector(track, streamIndex);
         double timeBase = 0;
         try
         {
-            await RunAsync("ffmpeg", ["-nostdin", "-v", "error", "-copyts", "-i", filename,
+            await RunAsync("ffmpeg", ["-nostdin", "-v", "error", "-copyts", "-protocol_whitelist", "file", "-i", filename,
                 "-map", "0:" + selector, "-c", "copy", "-f", "framecrc", "-"], line => {
                 if (line.StartsWith("#tb 0: "))
                 {
@@ -59,13 +60,16 @@ internal sealed class MediaExportTools
                 count++;
             }, token);
         }
-        catch (IOException) { return null; }
+        catch (IOException) when (!streamIndex.HasValue) { return null; }
         double tolerance = Math.Max(0.1, largestPacket * 2);
         return count > 0 && double.IsFinite(first) && double.IsFinite(end) && end > first
             ? new ExportCoverage(end - first, count, largestGap <= 0.003, tolerance) : null;
     }
 
-    public async Task MuxAsync(List<(BufferedVideoTrack Track, string Filename)> inputs,
+    static string Selector(BufferedVideoTrack track, int? streamIndex) => streamIndex?.ToString(CultureInfo.InvariantCulture)
+        ?? (track.Type == "video" ? "v:0" : "a:0");
+
+    public async Task MuxAsync(List<(BufferedVideoTrack Track, string Filename, int? StreamIndex)> inputs,
         double audioDelay, string output, CancellationToken token)
     {
         var args = new List<string> { "-nostdin", "-v", "error", "-xerror", "-y" };
@@ -73,19 +77,20 @@ internal sealed class MediaExportTools
         {
             if (input.Track.Type == "audio" && audioDelay != 0)
                 args.AddRange(["-itsoffset", BufferedVideo.Number(audioDelay)]);
-            args.AddRange(["-i", input.Filename]);
+            args.AddRange(["-protocol_whitelist", "file", "-i", input.Filename]);
         }
         for (int i = 0; i < inputs.Count; i++)
-            args.AddRange(["-map", i + (inputs[i].Track.Type == "video" ? ":v:0" : ":a:0")]);
+            args.AddRange(["-map", i + ":" + Selector(inputs[i].Track, inputs[i].StreamIndex)]);
         args.AddRange(["-c", "copy", "-avoid_negative_ts", "make_non_negative", output]);
-        await RunAsync("ffmpeg", args, null, token);
+        await RunAsync("ffmpeg", args, null, token, _("Could not create the output video."));
     }
 
     public Task VerifyDecodeAsync(string filename, CancellationToken token) =>
         RunAsync("ffmpeg", ["-nostdin", "-v", "error", "-xerror", "-err_detect", "explode", "-threads", "2", "-i", filename,
-            "-map", "0:v:0", "-map", "0:a:0?", "-f", "null", "-"], null, token);
+            "-map", "0:v:0", "-map", "0:a:0?", "-f", "null", "-"], null, token, _("The output video failed decoding verification."));
 
-    static async Task RunAsync(string name, IEnumerable<string> args, Action<string>? line, CancellationToken token)
+    static async Task RunAsync(string name, IEnumerable<string> args, Action<string>? line, CancellationToken token,
+        string? failureMessage = null)
     {
         var info = new ProcessStartInfo(Tool(name)) { UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true };
@@ -101,11 +106,11 @@ internal sealed class MediaExportTools
             throw new IOException(_("The FFmpeg tool is missing from this installation. Reinstall the complete mpv.net package."));
         }
         using var canceled = token.Register(() => { try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { } });
-        // Drain both pipes concurrently, without retaining packet lists or credential-bearing diagnostics.
-        bool reportedError = false;
+        // These processes only see local files. Keep the first diagnostic for the failed stage.
+        string? diagnostic = null;
         var stderr = Task.Run(async () => {
             while (await process.StandardError.ReadLineAsync() is { } error)
-                if (!string.IsNullOrWhiteSpace(error)) reportedError = true;
+                if (diagnostic == null && !string.IsNullOrWhiteSpace(error)) diagnostic = error[..Math.Min(350, error.Length)];
         });
         try
         {
@@ -113,7 +118,9 @@ internal sealed class MediaExportTools
             await process.WaitForExitAsync(CancellationToken.None);
             await stderr;
             token.ThrowIfCancellationRequested();
-            if (process.ExitCode != 0 || reportedError) throw new IOException(_("Could not verify or save the video: ") + name + " (" + process.ExitCode + ").");
+            if (process.ExitCode != 0 || diagnostic != null)
+                throw new IOException((failureMessage ?? _("Could not read media with FFmpeg.")) + " " +
+                    (diagnostic ?? $"{name} ({process.ExitCode})."));
         }
         finally
         {

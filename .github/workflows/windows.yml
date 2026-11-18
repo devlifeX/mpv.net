@@ -29,6 +29,16 @@ jobs:
       - name: Build self-contained Windows x64 package
         shell: pwsh
         run: ./src/Tools/build-portable.ps1
+      - name: Verify offline export from a complete video cache
+        shell: pwsh
+        run: |
+          $package = Join-Path $PWD 'artifacts/mpv.net-win-x64'
+          $ffmpegTools = Join-Path $PWD 'artifacts/dependencies/ffmpeg'
+          $env:PATH = "$package;$ffmpegTools;$env:PATH"
+          $env:MPVNET_TEST_LIBMPV = Join-Path $package 'libmpv-2.dll'
+          $env:COMPLETION_TEST_MODES = 'complete-bytes,complete-bytes-output-error,complete-mkv'
+          python -X utf8 tests/StreamCompletion/run-integration.py
+          if ($LASTEXITCODE) { throw 'Offline buffered-video export tests failed.' }
       - uses: msys2/setup-msys2@v2
         with:
           install: gettext

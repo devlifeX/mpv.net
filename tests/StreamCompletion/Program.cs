@@ -31,6 +31,7 @@ try
 {
     string source = url + (mode is "external" or "short-audio" or "corrupt" or "external-video" ? "/video.mp4" : "/dual.mp4");
     if (mode == "short-internal") source = url + "/short-dual.mp4";
+    if (mode == "complete-mkv") source = url + "/dual.mkv";
     if (mode == "hls") source = url + "/master.m3u8";
     if (mode == "edl")
     {
@@ -73,7 +74,14 @@ try
     if (mode == "holes") Check(BufferedVideo.GetCompleteRange(Player.GetPropertyString("demuxer-cache-state")) == null,
         "Missing cache ranges require completion");
     if (mode is "delay" or "negative-delay") Player.SetPropertyDouble("audio-delay", mode == "delay" ? 0.37 : -0.37);
+    bool completeByteCache = mode is "complete-bytes" or "complete-bytes-output-error" or "complete-mkv";
     var selection = BufferedVideo.Capture(Player, Player.PlaybackGeneration);
+    if (completeByteCache)
+    {
+        Check(selection.ByteCache != null, "Playback has an HTTP byte cache");
+        await WaitFor(() => selection.ByteCache!.Snapshot(new()).Chunks.All(c => c.Received == c.Length));
+        Check(selection.Tracks.All(t => t.FileStreamIndex.HasValue), "Selected streams can be mapped in the local file");
+    }
     Check(selection.Tracks.Single(t => t.Type == "audio").Source == (mode is "external" or "corrupt" or "external-video" ? url + "/audio2.m4a" : mode == "short-audio" ? url + "/short.m4a" : source),
         "Selected audio source captured");
     double position = Player.GetPropertyDouble("time-pos");
@@ -96,7 +104,7 @@ try
         Check(Directory.GetFiles(bookmarks).Length > 0, "Native resume bookmark exists before download");
         selection.Options["watch-later-directory"] = bookmarks;
     }
-    string destination = Path.Combine(output, "saved.mkv");
+    string destination = Path.Combine(output, mode == "complete-bytes-output-error" ? "saved.invalid" : "ویدیو saved.mkv");
     File.WriteAllText(destination, "existing destination");
     using var canceled = new CancellationTokenSource();
     Task shutdown = Task.CompletedTask;
@@ -108,7 +116,7 @@ try
             Player.CommandV("quit");
         });
     });
-    if (mode is "failure" or "truncated" or "retry" or "corrupt")
+    if (completeByteCache || mode is "failure" or "truncated" or "retry" or "corrupt")
     {
         Console.WriteLine("DOWNLOAD_READY");
         Check(Console.ReadLine() == "ready", "Server failure enabled");
@@ -116,7 +124,7 @@ try
     try
     {
         await BufferedVideo.SaveAsync(Player, destination, selection, canceled.Token, progress).WaitAsync(TimeSpan.FromSeconds(35));
-        Check(mode is not ("cancel" or "shutdown" or "failure" or "truncated"), "Expected download success");
+        Check(mode is not ("cancel" or "shutdown" or "failure" or "truncated" or "complete-bytes-output-error"), "Expected download success");
         Check(new FileInfo(destination).Length > 1000, "Complete video and pinned selected audio saved");
     }
     catch (OperationCanceledException) when (mode is "cancel" or "shutdown")
@@ -127,6 +135,11 @@ try
     {
         Console.WriteLine("EXPECTED SOURCE ERROR: " + error.Message);
         Check(File.ReadAllText(destination) == "existing destination", "Failed or truncated download preserves the destination");
+    }
+    catch (IOException error) when (mode == "complete-bytes-output-error")
+    {
+        Check(error.Message.StartsWith("Could not create the output video."), "A mux failure names the final output stage");
+        Check(File.ReadAllText(destination) == "existing destination", "Failed finalization preserves the destination");
     }
     await shutdown;
     if (mode != "shutdown")

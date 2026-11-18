@@ -149,6 +149,8 @@ public sealed class VideoRangeSource : IDisposable
     string BlockPath(int index) => Path.Combine(_folder, index + ".block");
     bool HasBlock(int index) => File.Exists(BlockPath(index)) && new FileInfo(BlockPath(index)).Length == BlockLength(index);
 
+    internal bool HasCompleteFile() => Enumerable.Range(0, Count).All(HasBlock);
+
     public DownloadSnapshot Snapshot(VideoDownloadControl control, double speed = 0) => new(Length,
         Enumerable.Range(0, Count).Sum(i => HasBlock(i) ? BlockLength(i) : _received.GetValueOrDefault(i)), speed,
         control.IsPaused, Enumerable.Range(0, Count).Select(i => new DownloadChunk((long)i * BlockSize,

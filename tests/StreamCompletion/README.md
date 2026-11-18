@@ -12,6 +12,8 @@ The runner generates H.264 video and two distinct AAC tones. Its HTTP server
 requires an authentication header for every request and supports byte ranges.
 It exercises the production export with:
 
+- Fully cached MP4 and MKV files with the network disabled before save, including
+  selected audio, Unicode filenames, and a mux failure that preserves the existing file.
 - Separately selected external video and audio, including remapping foreground track IDs.
 - A fully cached video and separately selected audio 2, verifying that video is
   not downloaded again and every selected audio packet is preserved.
@@ -31,7 +33,8 @@ It exercises the production export with:
   destination and cleaning temporary export files.
 
 All decoded video frames and every AAC packet are compared with the original
-selected source; the first AAC encoder priming packet may be omitted by mpv.
+selected source. Stream recording can omit the first AAC encoder priming packet;
+local finalization from a complete byte cache must also preserve that packet.
 Foreground position, pause state and track selection must remain unchanged.
 Fixtures, exports and native player processes are temporary. `COMPLETION_TEST_MODES`
 can select a comma-separated subset of the scenario names in the runner.

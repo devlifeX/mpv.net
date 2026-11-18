@@ -12,7 +12,8 @@ public sealed record BufferedVideoSelection(long Generation, double Duration,
     double AudioDelay, BufferedVideoTrack[] Tracks, Dictionary<string, string> Options,
     VideoRangeSource? ByteCache = null);
 
-public sealed record BufferedVideoTrack(string Type, string Source, int Id, bool CanUseCache);
+public sealed record BufferedVideoTrack(string Type, string Source, int Id, bool CanUseCache,
+    int? FileStreamIndex = null);
 
 public static class BufferedVideo
 {
@@ -53,8 +54,12 @@ public static class BufferedVideo
             int id = external ? tracks.TakeWhile(t => !t.Equals(track)).Count(t =>
                 t.GetProperty("type").GetString() == type && Flag(t, "external") &&
                 t.GetProperty("external-filename").GetString() == filename) + 1 : track.GetProperty("id").GetInt32();
+            int? fileStreamIndex = !external && !Flag(track, "dependent") &&
+                track.TryGetProperty("ff-index", out var index) && index.TryGetInt32(out int streamIndex) && streamIndex >= 0
+                ? streamIndex : null;
             selected.Add(new(type, filename, id, !external &&
-                tracks.Count(t => t.GetProperty("type").GetString() == type && !Flag(t, "external")) == 1));
+                tracks.Count(t => t.GetProperty("type").GetString() == type && !Flag(t, "external")) == 1,
+                fileStreamIndex));
         }
         if (!selected.Any(t => t.Type == "video"))
             throw new InvalidOperationException(_("Open a video before saving."));
@@ -106,7 +111,8 @@ public static class BufferedVideo
             string cache = Path.Combine(directory, "cache.mkv");
             string currentJson = player.GetPropertyString("track-list");
             using var currentTracks = JsonDocument.Parse(currentJson == "" ? "[]" : currentJson);
-            var cacheable = selection.Tracks.Where(t => t.CanUseCache &&
+            var completeSource = selection.ByteCache is { } original && original.HasCompleteFile() ? original : null;
+            var cacheable = selection.Tracks.Where(t => t.CanUseCache && completeSource?.Url != t.Source &&
                 currentTracks.RootElement.EnumerateArray().Any(c => Flag(c, "selected") && !Flag(c, "external") &&
                     c.GetProperty("type").GetString() == t.Type && c.GetProperty("id").GetInt32() == t.Id)).ToHashSet();
             var range = player.PlaybackGeneration == selection.Generation
@@ -123,7 +129,7 @@ public static class BufferedVideo
 
             while (true)
             {
-                var inputs = new List<(BufferedVideoTrack Track, string Filename)>();
+                var inputs = new List<(BufferedVideoTrack Track, string Filename, int? StreamIndex)>();
                 var missing = new List<BufferedVideoTrack>();
                 var coverage = new Dictionary<BufferedVideoTrack, ExportCoverage>();
                 foreach (var track in selection.Tracks)
@@ -134,7 +140,7 @@ public static class BufferedVideo
                     if (measured != null && measured.Continuous &&
                         measured.Duration >= selection.Duration - measured.Tolerance)
                     {
-                        inputs.Add((track, cache));
+                        inputs.Add((track, cache, null));
                         coverage[track] = measured;
                     }
                     else missing.Add(track);
@@ -143,7 +149,6 @@ public static class BufferedVideo
                 foreach (var source in missing.GroupBy(t => t.Source))
                 {
                     await control.WaitAsync(token);
-                    progress?.Report(_("Downloading complete selected streams..."));
                     string input = Path.Combine(directory, "download-" + download++ + ".mkv");
                     var sourceTracks = selection.Tracks.Where(t => t.Source == source.Key).ToArray();
                     VideoRangeSource? bytes = !freshSources && selection.ByteCache?.Url == source.Key ? selection.ByteCache : null;
@@ -162,21 +167,49 @@ public static class BufferedVideo
                         }
                         if (bytes != null)
                         {
-                            PreparePartsDirectory(parts);
-                            progress?.Report(_("Downloading missing byte chunks..."));
-                            await bytes.DownloadAsync(Path.Combine(parts, (freshSources ? "repair-" : "") + (download - 1).ToString(CultureInfo.InvariantCulture)),
-                                control, downloadProgress, token);
+                            if (!bytes.HasCompleteFile())
+                            {
+                                PreparePartsDirectory(parts);
+                                progress?.Report(_("Downloading missing byte chunks..."));
+                                await bytes.DownloadAsync(Path.Combine(parts, (freshSources ? "repair-" : "") + (download - 1).ToString(CultureInfo.InvariantCulture)),
+                                    control, downloadProgress, token);
+                            }
+                            else downloadProgress?.Report(bytes.Snapshot(control));
+
+                            progress?.Report(_("Preparing the complete local video..."));
+                            await control.WaitAsync(token);
                             string raw = Path.Combine(directory, "source-" + download + ".media");
                             await bytes.AssembleAsync(raw, token);
+
+                            // A complete byte cache is already the original file. Read the selected
+                            // streams directly instead of playing and recording the file again.
+                            if (source.All(t => t.FileStreamIndex.HasValue) && selection.ByteCache?.Url == source.Key &&
+                                selection.Options.GetValueOrDefault("edition", "auto") == "auto")
+                            {
+                                foreach (var track in source)
+                                {
+                                    var measured = await tools.MeasureAsync(raw, track, token, track.FileStreamIndex);
+                                    if (measured == null)
+                                        throw new IOException(_("Could not read a selected track from the complete local video."));
+                                    coverage[track] = measured;
+                                    inputs.Add((track, raw, track.FileStreamIndex));
+                                }
+                                continue;
+                            }
                             sourceTracks = sourceTracks.Select(t => t with { Source = raw }).ToArray();
                         }
-                        else progress?.Report(_("This stream requires a single connection. Pause and resume are available while this window stays open."));
+                        else
+                        {
+                            progress?.Report(_("Downloading complete selected streams..."));
+                            progress?.Report(_("This stream requires a single connection. Pause and resume are available while this window stays open."));
+                        }
                         for (int attempt = 0; ; attempt++)
                         {
                             try
                             {
                                 // Record the other selected track from the same source as an EOF/duration witness.
-                                double sourceDuration = await DownloadAsync(sourceTracks, selection.Options, input, control, token);
+                                double sourceDuration = await DownloadAsync(sourceTracks, selection.Options, input, control, token,
+                                    fromLocalFile: bytes != null);
                                 var measured = new Dictionary<BufferedVideoTrack, ExportCoverage>();
                                 foreach (var track in sourceTracks)
                                 {
@@ -191,7 +224,7 @@ public static class BufferedVideo
                                 foreach (var track in source) coverage[track] = measured[sourceTracks.First(t => t.Type == track.Type)];
                                 break;
                             }
-                            catch (IOException) when (attempt < 2)
+                            catch (IOException) when (bytes == null && attempt < 2)
                             {
                                 token.ThrowIfCancellationRequested();
                                 progress?.Report(_("Connection interrupted. Retrying the selected streams..."));
@@ -200,27 +233,27 @@ public static class BufferedVideo
                         }
                     }
                     finally { if (ownsBytes) bytes?.Dispose(); }
-                    foreach (var track in source) inputs.Add((track, input));
+                    foreach (var track in source) inputs.Add((track, input, null));
                 }
                 inputs = inputs.OrderBy(i => i.Track.Type == "video" ? 0 : 1).ToList();
 
                 progress?.Report(_("Verifying and saving video..."));
                 await control.WaitAsync(token);
                 string temporary = Path.Combine(directory, "output" + Path.GetExtension(filename));
+                await tools.MuxAsync(inputs, selection.AudioDelay, temporary, token);
                 try
                 {
-                    await tools.MuxAsync(inputs, selection.AudioDelay, temporary, token);
                     foreach (var track in selection.Tracks)
                     {
                         var saved = await tools.MeasureAsync(temporary, track, token);
-                        var original = coverage[track];
-                        if (saved == null || saved.Packets != original.Packets ||
-                            Math.Abs(saved.Duration - original.Duration) > Math.Max(saved.Tolerance, original.Tolerance))
+                        var expected = coverage[track];
+                        if (saved == null || saved.Packets != expected.Packets ||
+                            Math.Abs(saved.Duration - expected.Duration) > Math.Max(saved.Tolerance, expected.Tolerance))
                             throw new IOException(_("The saved file did not contain the complete selected video and audio. Please save again."));
                     }
                     await tools.VerifyDecodeAsync(temporary, token);
                 }
-                catch (IOException) when (!freshSources && (inputs.Any(i => i.Filename == cache) || selection.ByteCache != null))
+                catch (IOException) when (!freshSources && inputs.Any(i => i.Filename == cache))
                 {
                     // Corrupt cached payloads also need a fresh source pass, even if their timestamps look complete.
                     File.Delete(cache);
@@ -257,7 +290,7 @@ public static class BufferedVideo
     internal static string Number(double value) => value.ToString("R", CultureInfo.InvariantCulture);
 
     static async Task<double> DownloadAsync(BufferedVideoTrack[] tracks, Dictionary<string, string> options, string filename,
-        VideoDownloadControl control, CancellationToken token)
+        VideoDownloadControl control, CancellationToken token, bool fromLocalFile)
     {
         var worker = new MpvClient { Handle = mpv_create() };
         if (worker.Handle == 0) throw new IOException(_("Could not start the stream download."));
@@ -298,8 +331,10 @@ public static class BufferedVideo
             };
             worker.EndFile += reason => finished.TrySetResult(reason);
             mpv_request_log_messages(worker.Handle, "error");
-            worker.LogMessage += (_, _) => finished.TrySetException(new IOException(
-                _("The selected stream could not be read or written completely. Check the connection and free disk space.")));
+            string failure = fromLocalFile
+                ? _("mpv could not extract the selected tracks from the complete local video.")
+                : _("mpv could not record the selected streams from the source.");
+            worker.LogMessage += (_, _) => finished.TrySetException(new IOException(failure));
             loop = Task.Run(worker.EventLoop);
             worker.CommandV("loadfile", tracks[0].Source);
             while (!finished.Task.IsCompleted)
@@ -310,7 +345,7 @@ public static class BufferedVideo
             }
             var reason = await finished.Task.WaitAsync(token);
             if (reason != mpv_end_file_reason.MPV_END_FILE_REASON_EOF || !File.Exists(filename))
-                throw new IOException(_("The selected stream could not be downloaded. Check the connection and save again."));
+                throw new IOException(failure);
             return duration;
         }
         finally
