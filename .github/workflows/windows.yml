@@ -33,8 +33,7 @@ jobs:
         shell: pwsh
         run: |
           $package = Join-Path $PWD 'artifacts/mpv.net-win-x64'
-          $ffmpegTools = Join-Path $PWD 'artifacts/dependencies/ffmpeg'
-          $env:PATH = "$package;$ffmpegTools;$env:PATH"
+          $env:PATH = "$package;$env:PATH"
           $env:MPVNET_TEST_LIBMPV = Join-Path $package 'libmpv-2.dll'
           $env:COMPLETION_TEST_MODES = 'complete-bytes,complete-bytes-output-error,complete-mkv'
           python -X utf8 tests/StreamCompletion/run-integration.py

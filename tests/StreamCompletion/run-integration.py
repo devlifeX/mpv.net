@@ -10,6 +10,7 @@ import time
 
 project = Path(__file__).resolve().parent / "StreamCompletion.csproj"
 dotnet = os.environ.get("DOTNET", "dotnet")
+modes = os.environ.get("COMPLETION_TEST_MODES", "complete-bytes,complete-bytes-output-error,complete-mkv,external,external-video,short-audio,short-internal,corrupt,internal,source-change,edl,hls,watch-later,holes,delay,negative-delay,cancel,shutdown,retry,failure,truncated").split(",")
 subprocess.run([dotnet, "build", str(project), "--nologo", "-v:q"], check=True)
 
 
@@ -52,25 +53,27 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-completion-") as directory:
         "-c", "copy", "-movflags", "+faststart", root / "short-dual.mp4")
     run("-f", "lavfi", "-i", "color=c=red:size=160x90:rate=24", "-t", "4", "-c:v", "libx264",
         "-preset", "ultrafast", "-movflags", "+faststart", root / "other.mp4")
-    packet_info = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_packets", "-show_entries", "packet=pos,size,pts_time", "-of", "json", str(root / "video.mp4")]))
-    packet = next(p for p in packet_info["packets"] if float(p["pts_time"]) >= 2)
-    damaged = bytearray((root / "video.mp4").read_bytes())
-    offset, end = int(packet["pos"]), int(packet["pos"]) + int(packet["size"])
-    while offset + 5 < end:
-        length = int.from_bytes(damaged[offset:offset+4], "big")
-        kind = damaged[offset+4] & 31
-        if kind in [1, 5] and length > 100:
-            damaged[offset+5:offset+4+length] = b"\x00" * (length-1)
-            break
-        offset += length + 4
-    else:
-        raise AssertionError("Expected a slice NAL in the fixture")
-    bad = root / "damaged.mp4"
-    bad.write_bytes(damaged)
-    check_damage = subprocess.run(["ffmpeg", "-v", "error", "-xerror", "-err_detect", "explode", "-i", str(bad), "-f", "null", "-"],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    assert check_damage.returncode != 0 or check_damage.stderr.strip(), "Fixture corruption must cause a real decoding failure"
+    damaged = b""
+    if "corrupt" in modes:
+        packet_info = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_packets", "-show_entries", "packet=pos,size,pts_time", "-of", "json", str(root / "video.mp4")]))
+        packet = next(p for p in packet_info["packets"] if float(p["pts_time"]) >= 2)
+        damaged = bytearray((root / "video.mp4").read_bytes())
+        offset, end = int(packet["pos"]), int(packet["pos"]) + int(packet["size"])
+        while offset + 5 < end:
+            length = int.from_bytes(damaged[offset:offset+4], "big")
+            kind = damaged[offset+4] & 31
+            if kind in [1, 5] and length > 100:
+                damaged[offset+5:offset+4+length] = b"\x00" * (length-1)
+                break
+            offset += length + 4
+        else:
+            raise AssertionError("Expected a slice NAL in the fixture")
+        bad = root / "damaged.mp4"
+        bad.write_bytes(damaged)
+        check_damage = subprocess.run(["ffmpeg", "-v", "error", "-xerror", "-err_detect", "explode", "-i", str(bad), "-f", "null", "-"],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        assert check_damage.returncode != 0 or check_damage.stderr.strip(), "Fixture corruption must cause a real decoding failure"
     original_frames = frames(root / "dual.mp4")
     expected_audio = audio(root / "dual.mp4", 1)
     repaired = False
@@ -129,7 +132,7 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-completion-") as directory:
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        for mode in os.environ.get("COMPLETION_TEST_MODES", "complete-bytes,complete-bytes-output-error,complete-mkv,external,external-video,short-audio,short-internal,corrupt,internal,source-change,edl,hls,watch-later,holes,delay,negative-delay,cancel,shutdown,retry,failure,truncated").split(","):
+        for mode in modes:
             repaired = False
             online, truncate, slow = True, False, mode in ["cancel", "shutdown"]
             output = root / mode
@@ -167,9 +170,11 @@ with tempfile.TemporaryDirectory(prefix="mpvnet-completion-") as directory:
             if mode in ["cancel", "shutdown", "failure", "truncated", "complete-bytes-output-error"]:
                 continue
             saved = output / "ویدیو saved.mkv"
-            metadata = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(saved)]))
-            assert [s["codec_type"] for s in metadata["streams"]] == ["video", "audio"]
+            streams = [line.split(b": ", 1)[1] for line in run("-i", saved, "-map", "0", "-c", "copy", "-f", "framecrc", "-").splitlines()
+                       if line.startswith(b"#media_type ")]
+            assert streams == [b"video", b"audio"]
             if mode in ["delay", "negative-delay"]:
+                metadata = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(saved)]))
                 starts = [float(s["start_time"]) for s in metadata["streams"]]
                 assert abs(starts[1] - starts[0] - (0.37 if mode == "delay" else -0.37)) < 0.05, "Selected audio delay must be preserved"
             assert frames(saved) == (frames(root / "other.mp4") if mode == "external-video" else original_frames), "All video frames must match, including the missing prefix"

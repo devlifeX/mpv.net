@@ -1,8 +1,9 @@
 # Complete selected-stream export checks
 
-Requires .NET SDK 10, Python 3, FFmpeg, FFprobe (test assertions only), and real
+Requires .NET SDK 10, Python 3, FFmpeg, and real
 libmpv. `MPVNET_TEST_LIBMPV` selects the absolute library path; `DOTNET` selects a
 custom SDK. Set `LD_LIBRARY_PATH` on Linux if native dependencies need it.
+FFprobe is only needed for the corrupt-cache fixture and audio-delay checks.
 
 ```sh
 MPVNET_TEST_LIBMPV=/absolute/path/libmpv.so.2 python3 tests/StreamCompletion/run-integration.py
